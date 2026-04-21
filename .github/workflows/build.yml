@@ -1,0 +1,72 @@
+name: Build Windows executable
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pyinstaller>=6.0
+
+      - name: Build executable with PyInstaller
+        run: python build.py
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wabba_explorer-windows
+          path: dist/wabba_explorer.exe
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    needs: build-windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built executable
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: wabba_explorer-windows
+          path: dist/
+
+      - name: Create release zip
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          ZIP="wabba_explorer-${TAG}-windows.zip"
+          cd dist
+          zip "../${ZIP}" wabba_explorer.exe
+          echo "ZIP_NAME=${ZIP}" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release and upload zip
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_NAME }}
+          generate_release_notes: true

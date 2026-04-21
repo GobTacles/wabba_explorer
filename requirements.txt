@@ -1,0 +1,5 @@
+# Runtime dependencies
+xxhash>=3.6.0
+
+# Build/packaging
+pyinstaller>=6.0

@@ -1,0 +1,3 @@
+"""wabba_explorer – open and inspect .wabbajack archive files."""
+
+__version__ = "0.1.0"
