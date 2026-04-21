@@ -12,6 +12,7 @@ import sys
 import zipfile
 
 from .wabba_file import WabbaFile
+from . import __version__
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,8 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run_cli(argv: list[str] | None = None) -> None:
     """Entry point for CLI mode.  *argv* defaults to sys.argv[1:] minus
     any ``--cli`` flag already consumed by main.py."""
-    from .wabba_file import VERSION
-    print(f"wabba_explorer {VERSION}")
+    print(f"wabba_explorer {__version__}")
     parser = build_parser()
     args = parser.parse_args(argv)
 

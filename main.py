@@ -34,6 +34,11 @@ def _build_top_parser() -> argparse.ArgumentParser:
         help="Run in graphical mode (default when no file is given).",
     )
     parser.add_argument(
+        "--auto-open-recent",
+        action="store_true",
+        help="Automatically open the most recent file from the recent-files list.",
+    )
+    parser.add_argument(
         "-h", "--help",
         action="store_true",
         help="Show this help message and exit.",
@@ -71,7 +76,7 @@ def main() -> None:
         from wabba_explorer.gui import run_gui
         # If a file was given alongside --gui, open it directly.
         initial_file = remaining[0] if remaining and not remaining[0].startswith("-") else None
-        run_gui(initial_file)
+        run_gui(initial_file, auto_open_recent=top_args.auto_open_recent)
 
 
 if __name__ == "__main__":

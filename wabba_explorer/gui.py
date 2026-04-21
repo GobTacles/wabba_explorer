@@ -3,9 +3,9 @@
 Layout
 ------
   ┌─────────────────────────────────────────────────────────────┐
-  │  File: [path]                               [Open…]         │
+  │  Menu: File (Open, Recent) / Help                           │
   ├─────────────────────────────────────────────────────────────┤
-  │  [modlist json]  [Archives]  [Directives]                   │
+  │  [modlist json]  [Files]  [Archives]  [Directives]  [Problems] │
   │  ┌─────────────────────────────────────────────────────────┐│
   │  │  tab content (key list or filtered list | text preview) ││
   │  └─────────────────────────────────────────────────────────┘│
@@ -19,15 +19,19 @@ Layout
 import io
 import base64
 import json
+import os
+import pathlib
 import re
 import sys
 import threading
+import time
 import tkinter as tk
 from collections import Counter
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from .WabbaHash import WabbaHashXX64, WabbaHashXX64_stream
+from . import __version__
 from .wabba_file import WabbaFile
 
 _PREVIEW_MAX_CHARS = 4096
@@ -36,6 +40,9 @@ _PREVIEW_TAIL = 5   # last  N items shown in modlist-json tab
 _FILTER_DEBOUNCE_MS = 300
 _INLINE_PREVIEW_MAX = 256 * 1024  # 256 KiB – unpack InlineFile entries below this size
 _INLINE_WABBAHASH_MAX = 128 * 1024 * 1024  # 128 MiB
+_PROBLEMS_UPDATE_INTERVAL_SECS = 2.0
+_PROBLEMS_IID = "__PROBLEMS__"
+_RECENT_FILES_PATH = pathlib.Path.home() / ".wabba_explorer_recent"
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +80,45 @@ class _StdoutRedirect(io.TextIOBase):
     def flush(self) -> None:
         if self._original is not None and hasattr(self._original, "flush"):
             self._original.flush()
+
+
+# ---------------------------------------------------------------------------
+# Tooltip helper
+# ---------------------------------------------------------------------------
+
+class _Tooltip:
+    """Simple hover tooltip for any tkinter widget."""
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self._widget = widget
+        self._text = text
+        self._tip: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, event=None) -> None:
+        if self._tip is not None:
+            return
+        x = self._widget.winfo_rootx() + 20
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 2
+        self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        lbl = tk.Label(
+            self._tip,
+            text=self._text,
+            justify=tk.LEFT,
+            background="#ffffe0",
+            relief=tk.SOLID,
+            borderwidth=1,
+            font=("TkDefaultFont", 8),
+        )
+        lbl.pack(ipadx=4, ipady=2)
+
+    def _hide(self, event=None) -> None:
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +177,55 @@ class _FilteredListPanel(ttk.Frame):
         ttk.Label(filter_bar, text="Filter:").pack(side=tk.LEFT)
         self._filter_var = tk.StringVar()
         self._filter_var.trace_add("write", self._on_filter_change)
-        ttk.Entry(filter_bar, textvariable=self._filter_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True
+        _PLACEHOLDER = "^=start, *=wildcard"
+        # Use a plain tk.Entry (not ttk) so we can set foreground for the placeholder
+        self._filter_count_var = tk.StringVar(value="")
+        ttk.Label(filter_bar, textvariable=self._filter_count_var).pack(side=tk.RIGHT, padx=(4, 0))
+        self._filter_entry = tk.Entry(filter_bar, foreground="gray")
+        self._filter_entry.insert(0, _PLACEHOLDER)
+        self._filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        _Tooltip(
+            self._filter_entry,
+            "^=anchor to start, *=any characters\nExample: ^Begin*Middle",
         )
+
+        # Use a mutable flag so nested functions share one consistent state.
+        _ph_active = [True]  # True while the placeholder is showing
+
+        def _on_focus_in(event, _entry=self._filter_entry, _state=_ph_active) -> None:
+            if _state[0]:
+                _state[0] = False
+                _entry.configure(foreground="black")
+                _entry.delete(0, tk.END)
+
+        def _on_focus_out(
+            event,
+            _entry=self._filter_entry,
+            _var=self._filter_var,
+            _state=_ph_active,
+            _ph=_PLACEHOLDER,
+        ) -> None:
+            if not _entry.get():
+                _state[0] = True
+                _var.set("")
+                _entry.configure(foreground="gray")
+                _entry.delete(0, tk.END)
+                _entry.insert(0, _ph)
+
+        def _on_key_release(
+            event,
+            _entry=self._filter_entry,
+            _var=self._filter_var,
+            _state=_ph_active,
+        ) -> None:
+            if not _state[0]:
+                new_val = _entry.get()
+                if _var.get() != new_val:
+                    _var.set(new_val)
+
+        self._filter_entry.bind("<FocusIn>", _on_focus_in)
+        self._filter_entry.bind("<FocusOut>", _on_focus_out)
+        self._filter_entry.bind("<KeyRelease>", _on_key_release)
 
         if self._extra_controls_fn is not None:
             self._extra_controls_fn(left)
@@ -206,6 +298,7 @@ class _FilteredListPanel(ttk.Frame):
         labels = [self._label_fn(self._all_items[i]) for i in self._filtered_indices]
         # Setting listvariable is faster than delete+insert for large lists
         self._list_var.set(labels)
+        self._filter_count_var.set(f"{len(self._filtered_indices)} entries")
 
     def _on_select(self, _event=None) -> None:
         sel = self._listbox.curselection()
@@ -458,7 +551,235 @@ class _FsTreePanel(ttk.Frame):
                     lines.append("")
                     lines.append(f"[FromArchive] Hash '{h}' not found in Archives")
 
+            if last_d.get("$type") == "PatchedFromArchive":
+                archive_hash_path = last_d.get("ArchiveHashPath")
+                h = (archive_hash_path[0] if archive_hash_path else None) or last_d.get("Hash", "")
+                if h and h in self._archives_by_hash:
+                    archive_entry = self._archives_by_hash[h]
+                    lines.append("")
+                    lines.append("[PatchedFromArchive] Matching Archives entry:")
+                    lines.append(json.dumps(archive_entry, indent=2))
+                elif h:
+                    lines.append("")
+                    lines.append(f"[PatchedFromArchive] Hash '{h}' not found in Archives")
+                patch_id = last_d.get("PatchID", "")
+                if patch_id and self._wabba is not None:
+                    lines.append("")
+                    try:
+                        info = self._wabba.get_zip_info(patch_id)
+                        lines.append(f"[PatchID] Archive entry: {patch_id}")
+                        lines.append(f"  Uncompressed size : {info.file_size:,} bytes")
+                        lines.append(f"  Compressed size   : {info.compress_size:,} bytes")
+                        crc_b64 = base64.b64encode(info.CRC.to_bytes(4, "little")).decode()
+                        lines.append(f"  CRC               : {info.CRC:#010x}  ({crc_b64})")
+                        patch_data: bytes | None = None
+                        if info.file_size < _INLINE_PREVIEW_MAX:
+                            patch_data = self._wabba.read_bytes(patch_id)
+                        if info.file_size <= _INLINE_WABBAHASH_MAX:
+                            if patch_data is not None:
+                                wabba_hash = WabbaHashXX64(patch_data)
+                            else:
+                                with self._wabba.open_member(patch_id) as stream:
+                                    wabba_hash = WabbaHashXX64_stream(stream)
+                            lines.append(f"  WabbaHashXX64     : {wabba_hash}")
+                        else:
+                            lines.append(
+                                "  WabbaHashXX64     : (WabbaHash for large files not yet implemented)"
+                            )
+                        if info.file_size < _INLINE_PREVIEW_MAX:
+                            if patch_data is None:
+                                patch_data = self._wabba.read_bytes(patch_id)
+                            raw_text = patch_data.decode("latin-1", errors="replace")
+                            clean = "".join(
+                                c if c.isprintable() or c in "\n\r\t" else "?"
+                                for c in raw_text
+                            )
+                            lines.append(f"\n--- File preview ({info.file_size:,} bytes) ---")
+                            lines.append(clean)
+                    except FileNotFoundError:
+                        lines.append(f"[PatchID] '{patch_id}' not found in wabba archive")
+
         text = "\n".join(lines)
+        self._preview.configure(state=tk.NORMAL)
+        self._preview.delete("1.0", tk.END)
+        self._preview.insert(tk.END, text)
+        self._preview.configure(state=tk.DISABLED)
+
+
+# ---------------------------------------------------------------------------
+# Problems tab: mismatches tree + preview + progress
+# ---------------------------------------------------------------------------
+
+class _ProblemsPanel(_FsTreePanel):
+    """Problems tab panel for InlineFile/RemappedInlineFile hash mismatches."""
+
+    def __init__(self, parent, **kwargs) -> None:
+        self._progress = None
+        self._progress_var = tk.StringVar(value="")
+        self._last_mismatch_count = -1
+        self._stored_text = ""
+        self.problem_report_lines: list[str] = []
+        super().__init__(parent, **kwargs)
+
+    def add_problem_report_line(self, line: str) -> None:
+        """Append *line* to problem_report_lines and the right-side text widget."""
+        self.problem_report_lines.append(line)
+        self._stored_text = "\n".join(self.problem_report_lines)
+        self._preview.configure(state=tk.NORMAL)
+        self._preview.insert(tk.END, line + "\n")
+        self._preview.see(tk.END)
+        self._preview.configure(state=tk.DISABLED)
+
+    def _build(self) -> None:
+        paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(paned)
+        paned.add(left, weight=1)
+
+        self._tree = ttk.Treeview(left, show="tree", selectmode="browse")
+        self._tree.column("#0", width=350, stretch=True)
+        vsb = ttk.Scrollbar(left, command=self._tree.yview)
+        hsb = ttk.Scrollbar(left, orient=tk.HORIZONTAL, command=self._tree.xview)
+        self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        self._tree.pack(fill=tk.BOTH, expand=True)
+        self._tree.bind("<<TreeviewSelect>>", self._on_select)
+
+        right = ttk.Frame(paned)
+        paned.add(right, weight=3)
+
+        self._preview = tk.Text(
+            right, wrap=tk.WORD, state=tk.DISABLED, font=("Consolas", 9)
+        )
+        sb2 = ttk.Scrollbar(right, command=self._preview.yview)
+        self._preview.configure(yscrollcommand=sb2.set)
+        sb2.pack(side=tk.RIGHT, fill=tk.Y)
+        self._preview.pack(fill=tk.BOTH, expand=True)
+
+        progress_row = ttk.Frame(right)
+        progress_row.pack(fill=tk.X, pady=(4, 0))
+        self._progress = ttk.Progressbar(progress_row, mode="determinate", maximum=1)
+        self._progress.pack(fill=tk.X)
+        ttk.Label(progress_row, textvariable=self._progress_var, anchor=tk.W).pack(
+            fill=tk.X, pady=(2, 0)
+        )
+
+    def set_analyzing(self, *, header: str = "") -> None:
+        self._tree.delete(*self._tree.get_children())
+        self._all_directives = []
+        self.problem_report_lines = []
+        self._stored_text = ""
+        self._tree.insert("", tk.END, iid=_PROBLEMS_IID, text="PROBLEMS")
+        # Clear the text area, then write the header (if any) via the report line method
+        self._preview.configure(state=tk.NORMAL)
+        self._preview.delete("1.0", tk.END)
+        self._preview.configure(state=tk.DISABLED)
+        if header:
+            self.add_problem_report_line(header)
+        if self._progress is not None:
+            self._progress.configure(maximum=1, value=0)
+        self._progress_var.set("analyzing...")
+        self._last_mismatch_count = -1
+
+    def load_directives(self, directives, wabba, archives=None) -> None:
+        """Rebuild tree from mismatch directives, keeping PROBLEMS at the top."""
+        super().load_directives(directives, wabba, archives)
+        # super() clears the tree; re-insert the PROBLEMS summary node first
+        self._tree.insert("", 0, iid=_PROBLEMS_IID, text="PROBLEMS")
+
+    def _on_select(self, _event=None) -> None:
+        sel = self._tree.selection()
+        if not sel:
+            return
+        if sel[0] == _PROBLEMS_IID:
+            self._set_preview(self._stored_text or "(analysis not yet complete)")
+            return
+        self._show_preview(sel[0])
+
+    def update_analysis(
+        self,
+        *,
+        total: int,
+        processed: int,
+        matches: int,
+        mismatches: int,
+        ignores: int,
+        elapsed: float,
+        mismatch_directives: list[dict],
+        wabba: WabbaFile | None,
+        archives: list | None,
+        done: bool,
+        unused_archives: list | None = None,
+        missing_archives: list[str] | None = None,
+        missing_inline_files: list[str] | None = None,
+    ) -> None:
+        total_safe = total if total > 0 else 1
+        if self._progress is not None:
+            self._progress.configure(maximum=total_safe, value=min(processed, total_safe))
+
+        def _pct(value: int) -> float:
+            return (100.0 * value / total) if total else 0.0
+
+        progress_text = (
+            f"processed {processed}/{total} | "
+            f"matches {matches} ({_pct(matches):.1f}%) | "
+            f"mismatches {mismatches} ({_pct(mismatches):.1f}%) | "
+            f"ignored {ignores} ({_pct(ignores):.1f}%) | "
+            f"elapsed {elapsed:.1f}s"
+        )
+        self._progress_var.set(progress_text)
+
+        if mismatches != self._last_mismatch_count or done:
+            self.load_directives(mismatch_directives, wabba, archives)
+            self._last_mismatch_count = mismatches
+
+        if not done:
+            return
+
+        # Build structured report at completion
+        self.add_problem_report_line("")
+        self.add_problem_report_line("Directives:")
+        if mismatch_directives:
+            for item in mismatch_directives:
+                self.add_problem_report_line(f"- hash mismatch: {_directive_label(item)}")
+        else:
+            self.add_problem_report_line("- None")
+
+        self.add_problem_report_line("")
+        self.add_problem_report_line("Unused Archives:")
+        if unused_archives:
+            for a in unused_archives:
+                self.add_problem_report_line(f"- unused: {_archive_label(a)}")
+        else:
+            self.add_problem_report_line("- None")
+
+        self.add_problem_report_line("")
+        self.add_problem_report_line("Missing Archives:")
+        if missing_archives:
+            for line in missing_archives:
+                self.add_problem_report_line(line)
+        else:
+            self.add_problem_report_line("- None")
+
+        self.add_problem_report_line("")
+        self.add_problem_report_line("Missing InlineFiles:")
+        if missing_inline_files:
+            for line in missing_inline_files:
+                self.add_problem_report_line(line)
+        else:
+            self.add_problem_report_line("- None")
+
+        self.add_problem_report_line("")
+        self.add_problem_report_line("Summary:")
+        self.add_problem_report_line(f"- processed total: {total}")
+        self.add_problem_report_line(f"- hash matches: {matches} ({_pct(matches):.1f}%)")
+        self.add_problem_report_line(f"- mismatches: {mismatches} ({_pct(mismatches):.1f}%)")
+        self.add_problem_report_line(f"- ignored: {ignores} ({_pct(ignores):.1f}%)")
+        self.add_problem_report_line(f"- elapsed: {elapsed:.1f}s")
+
+    def _set_preview(self, text: str) -> None:
         self._preview.configure(state=tk.NORMAL)
         self._preview.delete("1.0", tk.END)
         self._preview.insert(tk.END, text)
@@ -474,7 +795,7 @@ class WabbaExplorerApp(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("Wabba Explorer")
+        self.title(f"Wabba Explorer {__version__}")
         self.geometry("1100x750")
         self.minsize(700, 500)
 
@@ -491,7 +812,13 @@ class WabbaExplorerApp(tk.Tk):
         self._pending_files_args: tuple | None = None  # (directives, wabba, archives)
         self._all_directives_list: list = []  # full directives list for cross-tab lookup
         self._archives_by_hash: dict[str, dict] = {}  # hash → archive entry
+        self._recent_files: list[str] = []
+        self._max_recent_files = 8
+        self._recent_files_menu: tk.Menu | None = None
+        self._problems_run_id = 0
+        self._problems_analysis_started = False
 
+        self._load_recent_files()
         self._build_ui()
         self._build_menubar()
         self._redirect_output_streams()
@@ -503,10 +830,56 @@ class WabbaExplorerApp(tk.Tk):
 
     def _build_menubar(self) -> None:
         menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Open File…", command=self._on_open)
+        self._recent_files_menu = tk.Menu(file_menu, tearoff=0)
+        file_menu.add_cascade(label="Recent Files", menu=self._recent_files_menu)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
+        self._refresh_recent_files_menu()
+
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About / Licenses…", command=self._show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
         self.config(menu=menubar)
+
+    def _refresh_recent_files_menu(self) -> None:
+        if self._recent_files_menu is None:
+            return
+        self._recent_files_menu.delete(0, tk.END)
+        if not self._recent_files:
+            self._recent_files_menu.add_command(label="(none)", state=tk.DISABLED)
+            return
+        for path in self._recent_files:
+            self._recent_files_menu.add_command(
+                label=path,
+                command=lambda p=path: self._load_file(p),
+            )
+
+    def _remember_recent_file(self, path: str) -> None:
+        self._recent_files = [p for p in self._recent_files if p != path]
+        self._recent_files.insert(0, path)
+        self._recent_files = self._recent_files[: self._max_recent_files]
+        self._refresh_recent_files_menu()
+        self._save_recent_files()
+
+    def _load_recent_files(self) -> None:
+        try:
+            data = json.loads(_RECENT_FILES_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                self._recent_files = [p for p in data if isinstance(p, str)]
+        except (OSError, json.JSONDecodeError):
+            self._recent_files = []
+
+    def _save_recent_files(self) -> None:
+        try:
+            _RECENT_FILES_PATH.write_text(
+                json.dumps(self._recent_files, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
 
     def _show_about(self) -> None:
         _XXHASH_LICENSE = """\
@@ -572,16 +945,6 @@ License: https://opensource.org/licenses/BSD-2-Clause
             self, textvariable=self._status_var, anchor=tk.W, relief=tk.SUNKEN
         ).pack(side=tk.BOTTOM, fill=tk.X, padx=2, pady=2)
 
-        # ---- top bar (file path + open button) -----------------------
-        top = ttk.Frame(self, padding=4)
-        top.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(top, text="File:").pack(side=tk.LEFT)
-        self._path_var = tk.StringVar()
-        ttk.Entry(top, textvariable=self._path_var, state="readonly", width=60).pack(
-            side=tk.LEFT, padx=4, fill=tk.X, expand=True
-        )
-        ttk.Button(top, text="Open…", command=self._on_open).pack(side=tk.LEFT)
-
         # ---- outer vertical paned (main tabs above, console below) ---
         outer = ttk.PanedWindow(self, orient=tk.VERTICAL)
         outer.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=4, pady=4)
@@ -595,6 +958,7 @@ License: https://opensource.org/licenses/BSD-2-Clause
         self._build_tab_file_explorer()
         self._build_tab_archives()
         self._build_tab_directives()
+        self._build_tab_problems()
         self._main_nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # ---- bottom notebook (Console tab) ---------------------------
@@ -756,6 +1120,14 @@ License: https://opensource.org/licenses/BSD-2-Clause
         )
         self._directives_panel.pack(fill=tk.BOTH, expand=True)
 
+    def _build_tab_problems(self) -> None:
+        """Tab: directive hash mismatch analysis with progress."""
+        frame = ttk.Frame(self._main_nb)
+        self._main_nb.add(frame, text="Problems")
+
+        self._problems_panel = _ProblemsPanel(frame)
+        self._problems_panel.pack(fill=tk.BOTH, expand=True)
+
     def _redirect_output_streams(self) -> None:
         sys.stdout = _StdoutRedirect(self._console_text, self._orig_stdout)
         sys.stderr = _StdoutRedirect(self._console_text, self._orig_stderr)
@@ -844,19 +1216,19 @@ License: https://opensource.org/licenses/BSD-2-Clause
             elif h:
                 lines.append(f"[{t}] Hash '{h}' not found in Archives")
 
-        elif t == "InlineFile" and self._wabba is not None:
+        elif t in ("InlineFile", "RemappedInlineFile") and self._wabba is not None:
             source_id = item.get("SourceDataID", "")
             if source_id:
                 try:
                     self._show_wabba_entry(
                         source_id,
-                        "InlineFile",
+                        t,
                         lines,
                         compare_hash=item.get("Hash", "") or "",
                     )
                 except FileNotFoundError:
                     lines.append(
-                        f"[InlineFile] Source file '{source_id}' not found in archive"
+                        f"[{t}] Source file '{source_id}' not found in archive"
                     )
 
         # PatchID: present on any directive type (most commonly PatchedFromArchive).
@@ -906,7 +1278,7 @@ License: https://opensource.org/licenses/BSD-2-Clause
             return
 
         self._wabba = wabba
-        self._path_var.set(path)
+        self._remember_recent_file(path)
         self._modlist_data = None
         self._modlist_keys = []
 
@@ -914,6 +1286,8 @@ License: https://opensource.org/licenses/BSD-2-Clause
         self._pending_archives = None
         self._pending_directives = None
         self._pending_files_args = None
+        self._problems_run_id += 1
+        self._problems_analysis_started = False
 
         # Show loading placeholders before heavy parsing so the UI responds
         self._status_var.set(f"Loading: {path} …")
@@ -922,6 +1296,11 @@ License: https://opensource.org/licenses/BSD-2-Clause
         self._archives_panel.set_loading()
         self._directives_panel.set_loading()
         self._files_panel.set_loading()
+        _report_header = "\n".join([
+            f"Wabba Explorer {__version__} problem report for {os.path.basename(path)}",
+            f"Path: {path}",
+        ])
+        self._problems_panel.set_analyzing(header=_report_header)
         # Force a full repaint so the loading placeholders are visible before
         # the heavy parsing begins (update_idletasks alone is insufficient
         # because it doesn't process expose/redraw events on all platforms).
@@ -987,6 +1366,10 @@ License: https://opensource.org/licenses/BSD-2-Clause
         """Main-thread callback: populate all tabs with parsed data."""
         self._modlist_data = modlist_data
         self._modlist_keys = modlist_keys
+
+        # Append version line to Problems header now that modlist is parsed
+        version = (modlist_data.get("Version", "") if modlist_data else "") or "unknown"
+        self._problems_panel.add_problem_report_line(f"Version: {version}")
 
         # Populate tab 1 key list (fast – just a handful of top-level keys)
         self._key_listbox.delete(0, tk.END)
@@ -1059,6 +1442,268 @@ License: https://opensource.org/licenses/BSD-2-Clause
             self._pending_files_args = None
             self._files_panel.set_loading()
             self.after(100, lambda: self._files_panel.load_directives(*args))
+
+        elif tab_text == "Problems":
+            if not self._problems_analysis_started:
+                self._start_problems_analysis()
+
+    def _start_problems_analysis(self) -> None:
+        self._problems_run_id += 1
+        run_id = self._problems_run_id
+        self._problems_analysis_started = True
+        # The panel was already initialised with header in _load_file; no reset here.
+
+        wabba = self._wabba
+        directives = list(self._all_directives_list)
+        archives = list(self._archives_by_hash.values())
+        self.after(
+            100,
+            lambda: threading.Thread(
+                target=self._run_problems_analysis_worker,
+                args=(run_id, wabba, directives, archives),
+                daemon=True,
+            ).start(),
+        )
+
+    def _run_problems_analysis_worker(
+        self,
+        run_id: int,
+        wabba: WabbaFile | None,
+        directives: list,
+        archives: list,
+    ) -> None:
+        total = len(directives)
+        processed = 0
+        matches = 0
+        mismatches = 0
+        ignores = 0
+        mismatch_directives: list[dict] = []
+        used_hashes: set[str] = set()
+        missing_archives: list[str] = []
+        missing_inline_files: list[str] = []
+        # Build set of archive hashes for fast lookup
+        archives_by_hash: set[str] = {
+            a.get("Hash", "") for a in archives if isinstance(a, dict) and a.get("Hash", "")
+        }
+        # Build set of wabba zip root filenames for fast lookup
+        wabba_root_names: set[str] = set()
+        if wabba is not None:
+            try:
+                wabba_root_names = set(wabba.list_root_files())
+            except Exception:
+                pass
+        start = time.monotonic()
+        last_update = start
+
+        self.after(
+            0,
+            lambda: self._update_problems_ui(
+                run_id,
+                total=total,
+                processed=0,
+                matches=0,
+                mismatches=0,
+                ignores=0,
+                elapsed=0.0,
+                mismatch_directives=[],
+                wabba=wabba,
+                archives=archives,
+                done=False,
+            ),
+        )
+
+        for d in directives:
+            if run_id != self._problems_run_id:
+                return
+            processed += 1
+            if not isinstance(d, dict):
+                ignores += 1
+            else:
+                dtype = d.get("$type", "")
+                # Track which archive hashes are referenced by FromArchive / PatchedFromArchive
+                if dtype in ("FromArchive", "PatchedFromArchive"):
+                    ahp = d.get("ArchiveHashPath")
+                    h = (ahp[0] if ahp else None) or d.get("Hash", "")
+                    if h:
+                        used_hashes.add(h)
+
+                if dtype == "InlineFile":
+                    # Check for hash mismatch (RemappedInlineFile excluded – see below)
+                    expected_hash = d.get("Hash", "")
+                    source_id = d.get("SourceDataID", "")
+                    actual_hash = ""
+                    if wabba is not None and isinstance(source_id, str) and source_id:
+                        try:
+                            with wabba.open_member(source_id) as stream:
+                                actual_hash = WabbaHashXX64_stream(stream)
+                        except FileNotFoundError:
+                            actual_hash = ""
+                    if expected_hash and actual_hash and expected_hash == actual_hash:
+                        matches += 1
+                    else:
+                        mismatches += 1
+                        mismatch_directives.append(d)
+                    # Check SourceDataID exists in wabba zip root
+                    if isinstance(source_id, str) and source_id:
+                        if source_id not in wabba_root_names:
+                            to = d.get("To", source_id)
+                            missing_inline_files.append(
+                                f"- missing InlineFile: {to} [SourceDataID={source_id}]"
+                            )
+
+                elif dtype == "RemappedInlineFile":
+                    # Not checked for hash mismatches but SourceDataID should exist
+                    source_id = d.get("SourceDataID", "")
+                    if isinstance(source_id, str) and source_id:
+                        if source_id not in wabba_root_names:
+                            to = d.get("To", source_id)
+                            missing_inline_files.append(
+                                f"- missing InlineFile: {to} [SourceDataID={source_id}]"
+                            )
+                    ignores += 1
+
+                elif dtype == "FromArchive":
+                    # ArchiveHashPath[0] must exist in Archives by hash
+                    ahp = d.get("ArchiveHashPath")
+                    h = (ahp[0] if ahp else None) or d.get("Hash", "")
+                    if h and h not in archives_by_hash:
+                        to = d.get("To", "?")
+                        missing_archives.append(f"- missing Archive: {to} [hash={h}]")
+                    ignores += 1
+
+                elif dtype == "PatchedFromArchive":
+                    # ArchiveHashPath[0] → Archives
+                    ahp = d.get("ArchiveHashPath")
+                    h = (ahp[0] if ahp else None) or d.get("Hash", "")
+                    if h and h not in archives_by_hash:
+                        to = d.get("To", "?")
+                        missing_archives.append(f"- missing Archive: {to} [hash={h}]")
+                    # PatchID → wabba zip root (treated as inline file)
+                    patch_id = d.get("PatchID", "")
+                    if isinstance(patch_id, str) and patch_id:
+                        if patch_id not in wabba_root_names:
+                            to = d.get("To", patch_id)
+                            missing_inline_files.append(
+                                f"- missing InlineFile: {to} [PatchID={patch_id}]"
+                            )
+                    ignores += 1
+
+                else:
+                    ignores += 1
+
+            now = time.monotonic()
+            if now - last_update >= _PROBLEMS_UPDATE_INTERVAL_SECS:
+                snapshot = list(mismatch_directives)
+                elapsed = now - start
+                self._schedule_problems_update(
+                    run_id=run_id,
+                    total=total,
+                    processed=processed,
+                    matches=matches,
+                    mismatches=mismatches,
+                    ignores=ignores,
+                    elapsed=elapsed,
+                    mismatch_directives=snapshot,
+                    wabba=wabba,
+                    archives=archives,
+                    done=False,
+                )
+                last_update = now
+
+        elapsed = time.monotonic() - start
+        unused_archives = [
+            a for a in archives
+            if isinstance(a, dict) and a.get("Hash", "") not in used_hashes
+        ]
+        self.after(
+            0,
+            lambda ua=unused_archives, ma=list(missing_archives), mi=list(missing_inline_files): (
+                self._update_problems_ui(
+                    run_id,
+                    total=total,
+                    processed=processed,
+                    matches=matches,
+                    mismatches=mismatches,
+                    ignores=ignores,
+                    elapsed=elapsed,
+                    mismatch_directives=list(mismatch_directives),
+                    wabba=wabba,
+                    archives=archives,
+                    done=True,
+                    unused_archives=ua,
+                    missing_archives=ma,
+                    missing_inline_files=mi,
+                )
+            ),
+        )
+
+    def _schedule_problems_update(
+        self,
+        *,
+        run_id: int,
+        total: int,
+        processed: int,
+        matches: int,
+        mismatches: int,
+        ignores: int,
+        elapsed: float,
+        mismatch_directives: list[dict],
+        wabba: WabbaFile | None,
+        archives: list,
+        done: bool,
+    ) -> None:
+        self.after(
+            0,
+            lambda: self._update_problems_ui(
+                run_id,
+                total=total,
+                processed=processed,
+                matches=matches,
+                mismatches=mismatches,
+                ignores=ignores,
+                elapsed=elapsed,
+                mismatch_directives=mismatch_directives,
+                wabba=wabba,
+                archives=archives,
+                done=done,
+            ),
+        )
+
+    def _update_problems_ui(
+        self,
+        run_id: int,
+        *,
+        total: int,
+        processed: int,
+        matches: int,
+        mismatches: int,
+        ignores: int,
+        elapsed: float,
+        mismatch_directives: list[dict],
+        wabba: WabbaFile | None,
+        archives: list,
+        done: bool,
+        unused_archives: list | None = None,
+        missing_archives: list[str] | None = None,
+        missing_inline_files: list[str] | None = None,
+    ) -> None:
+        if run_id != self._problems_run_id:
+            return
+        self._problems_panel.update_analysis(
+            total=total,
+            processed=processed,
+            matches=matches,
+            mismatches=mismatches,
+            ignores=ignores,
+            elapsed=elapsed,
+            mismatch_directives=mismatch_directives,
+            wabba=wabba,
+            archives=archives,
+            done=done,
+            unused_archives=unused_archives,
+            missing_archives=missing_archives,
+            missing_inline_files=missing_inline_files,
+        )
 
     def _on_key_select(self, _event=None) -> None:
         if self._modlist_data is None:
@@ -1246,11 +1891,16 @@ def _preview_value(key: str, value) -> str:
     return f"# {key}\n\n{s}"
 
 
-def run_gui(initial_file: str | None = None) -> None:
-    """Launch the GUI.  Optionally open *initial_file* on start-up."""
-    from .wabba_file import VERSION
-    print(f"wabba_explorer {VERSION}")
+def run_gui(initial_file: str | None = None, *, auto_open_recent: bool = False) -> None:
+    """Launch the GUI.  Optionally open *initial_file* on start-up.
+
+    When *auto_open_recent* is True and no *initial_file* is given, the most
+    recent file from the persistent recent-files list is opened automatically.
+    """
+    print(f"wabba_explorer {__version__}")
     app = WabbaExplorerApp()
     if initial_file:
         app._load_file(initial_file)
+    elif auto_open_recent and app._recent_files:
+        app._load_file(app._recent_files[0])
     app.mainloop()

@@ -5,7 +5,7 @@
       "label": "Run GUI",
       "type": "shell",
       "command": "${command:python.interpreterPath}",
-      "args": ["${workspaceFolder}/main.py"],
+      "args": ["${workspaceFolder}/main.py", "--auto-open-recent"],
       "options": {
         "cwd": "${workspaceFolder}"
       },

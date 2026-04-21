@@ -9,8 +9,6 @@ comparison.
 import zipfile
 import json
 
-VERSION = "v1.0.0"
-
 
 class WabbaFile:
     """Represents one open .wabbajack archive."""
