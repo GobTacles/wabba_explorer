@@ -10,6 +10,7 @@ REM Output: dist\wabba_explorer.exe
 pyinstaller ^
     --onefile ^
     --windowed ^
+    --hidden-import xxhash ^
     --name wabba_explorer ^
     --icon NONE ^
     main.py

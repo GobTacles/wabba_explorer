@@ -47,7 +47,7 @@ python main.py --gui path/to/file.wabbajack      # GUI, open file immediately
 Prerequisites (one-time):
 
 ```
-pip install pyinstaller
+pip install -r requirements.txt
 ```
 
 Then, from the repository root:

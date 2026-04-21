@@ -493,8 +493,73 @@ class WabbaExplorerApp(tk.Tk):
         self._archives_by_hash: dict[str, dict] = {}  # hash → archive entry
 
         self._build_ui()
+        self._build_menubar()
         self._redirect_output_streams()
         self.after(100, self._init_sash)
+
+    # ------------------------------------------------------------------
+    # Menu bar
+    # ------------------------------------------------------------------
+
+    def _build_menubar(self) -> None:
+        menubar = tk.Menu(self)
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="About / Licenses…", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        self.config(menu=menubar)
+
+    def _show_about(self) -> None:
+        _XXHASH_LICENSE = """\
+xxHash — Extremely fast hash algorithm
+Copyright (C) 2012-2023 Yann Collet
+
+BSD 2-Clause License
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+* Redistributions of source code must retain the above copyright
+  notice, this list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in
+  the documentation and/or other materials provided with the
+  distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+Source: https://github.com/ifduyue/python-xxhash
+        https://github.com/Cyan4973/xxHash
+License: https://opensource.org/licenses/BSD-2-Clause
+"""
+        win = tk.Toplevel(self)
+        win.title("About – Wabba Explorer")
+        win.resizable(True, True)
+        win.geometry("620x420")
+        win.grab_set()
+
+        text = tk.Text(win, wrap=tk.WORD, font=("Consolas", 9), padx=8, pady=8)
+        sb = ttk.Scrollbar(win, command=text.yview)
+        text.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        text.pack(fill=tk.BOTH, expand=True)
+        text.insert(tk.END, _XXHASH_LICENSE)
+        text.configure(state=tk.DISABLED)
+
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=6)
+        win.bind("<Escape>", lambda _e: win.destroy())
 
     # ------------------------------------------------------------------
     # UI construction

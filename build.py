@@ -17,6 +17,7 @@ def main() -> None:
         sys.executable, "-m", "PyInstaller",
         "--onefile",
         "--windowed",
+        "--hidden-import", "xxhash",
         "--name", "wabba_explorer",
         "main.py",
     ]
