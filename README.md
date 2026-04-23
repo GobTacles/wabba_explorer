@@ -15,6 +15,15 @@ A `.wabbajack` file is a ZIP archive.  This tool keeps the file handle open
   archives for future side-by-side comparison.
 * **GUI** (tkinter – cross-platform) and **CLI** modes. (cli not yet functional)
 
+## feature ideas
+
+- edit/update inline file  (like tweak a config/.ini ,  if its just used directly instead of complex binary patching that should be doable)
+- shared downloads folder : move used archives to new folder, to set up a wabba compile environment  (if you have a big shared download folder and a working wabba file and you want to set things up so  you can compile wabba without downloading everything from scratch, then i could make an option to copy only the needed downloads to a new download folder based on the "Archives" json data and also check if hashes matchs. i think i could also generate the .meta files in the downloads folder from the "Archives" json data)
+- compare two wabba files (like different versions) to see what actually changed
+- "update" a archive entry (mod/download).   like use a newer version of a mod without having do a full wabba recompile.  will only work if theres no fancy inline patching of changed files, but from what i've seen i think it would actually work in a lot of cases.  that would make hotfixing so much easier. sure it still has to be tested if new features break things etc, but still.
+- scan a modlist installation folder for files that have been modified (shouldnt be too hard for config files that are inlined directly.  i could also list "added" files.   warnings for binary patched files that i cant analyze YET (until i figure out the OCTODELTA format i've seen in patch directives) , wont work for BSA.
+- maybe even "revert to default" option for directly inlined files like configs
+
 ---
 
 ## Quick start

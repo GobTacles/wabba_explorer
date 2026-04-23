@@ -8,6 +8,10 @@ comparison.
 
 import zipfile
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .wabba.cache import WabbaCache
 
 
 class WabbaFile:
@@ -16,6 +20,10 @@ class WabbaFile:
     def __init__(self, path: str) -> None:
         self.path = path
         self._zip: zipfile.ZipFile | None = None
+        #: Cache populated by background workers after the file is opened.
+        #: Created by ``WabbaExplorerApp._load_file`` and attached here so
+        #: panels can reach all pre-computed data through a single object.
+        self.cache: "WabbaCache | None" = None
 
     # ------------------------------------------------------------------
     # Context-manager support
