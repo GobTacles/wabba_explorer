@@ -15,6 +15,11 @@ _PROBLEMS_UPDATE_INTERVAL_SECS = 2.0
 # excluded from the "Unused InlineFiles" report.
 _WABBA_ROOT_SYSTEM_FILES = {"modlist", "modlist-image.png"}
 
+# Minimum archive byte size to apply the low-usage check.
+_LOW_USAGE_MIN_ARCHIVE_BYTES = 100 * 1024 * 1024  # 100 MB
+# Fraction of archive size that must be referenced before we consider usage significant.
+_LOW_USAGE_MIN_FRACTION = 0.10
+
 
 @dataclass
 class AnalysisResult:
@@ -31,6 +36,7 @@ class AnalysisResult:
     missing_archives: list = field(default_factory=list)
     missing_inline_files: list = field(default_factory=list)
     unused_inline_files: list = field(default_factory=list)
+    low_usage_archives: list = field(default_factory=list)
 
 
 def analyze_directives(
@@ -88,6 +94,18 @@ def analyze_directives(
     missing_archives: list[str] = []
     missing_inline_files: list[str] = []
     referenced_inline_ids: set[str] = set()
+
+    # Low-usage archive tracking: hash → total bytes referenced by FromArchive directives
+    _large_archive_sizes: dict[str, int] = {
+        a.get("Hash", ""): int(a.get("Size", 0))
+        for a in archives
+        if isinstance(a, dict)
+        and a.get("Hash", "")
+        and int(a.get("Size", 0)) > _LOW_USAGE_MIN_ARCHIVE_BYTES
+    }
+    _archive_used_bytes: dict[str, int] = {}
+    # Hashes confirmed fully-used (PatchedFromArchive found) – skip low-usage check
+    _archive_significant: set[str] = set()
 
     archive_hash_set: set[str]
     if precomputed_archive_hashes is not None:
@@ -167,6 +185,10 @@ def analyze_directives(
                 if h and h not in archive_hash_set:
                     to = d.get("To", "?")
                     missing_archives.append(f"- missing Archive: {to} [hash={h}]")
+                # Accumulate used bytes for large-archive low-usage check
+                if h and h in _large_archive_sizes and h not in _archive_significant:
+                    size_bytes = int(d.get("Size", 0))
+                    _archive_used_bytes[h] = _archive_used_bytes.get(h, 0) + size_bytes
                 ignores += 1
 
             elif dtype == "PatchedFromArchive":
@@ -175,6 +197,9 @@ def analyze_directives(
                 if h and h not in archive_hash_set:
                     to = d.get("To", "?")
                     missing_archives.append(f"- missing Archive: {to} [hash={h}]")
+                # PatchedFromArchive implies the archive is significantly used
+                if h and h in _large_archive_sizes:
+                    _archive_significant.add(h)
                 patch_id = d.get("PatchID", "")
                 if isinstance(patch_id, str) and patch_id:
                     referenced_inline_ids.add(patch_id)
@@ -212,6 +237,25 @@ def analyze_directives(
     ]
     unused_inline_files = sorted(wabba_root_names - referenced_inline_ids - _WABBA_ROOT_SYSTEM_FILES)
 
+    # Archives with >50 MB size where <10% of bytes are actually used by FromArchive directives
+    _archives_by_hash = {
+        a.get("Hash", ""): a for a in archives if isinstance(a, dict) and a.get("Hash", "")
+    }
+    low_usage_archives = []
+    for h, archive_size in _large_archive_sizes.items():
+        if h in _archive_significant:
+            continue
+        used = _archive_used_bytes.get(h, 0)
+        if used < archive_size * _LOW_USAGE_MIN_FRACTION:
+            a = _archives_by_hash.get(h)
+            if a is not None:
+                low_usage_archives.append({
+                    "archive": a,
+                    "archive_size": archive_size,
+                    "used_bytes": used,
+                })
+    low_usage_archives.sort(key=lambda e: e["archive_size"], reverse=True)
+
     result = AnalysisResult(
         total=total,
         processed=processed,
@@ -224,6 +268,7 @@ def analyze_directives(
         missing_archives=list(missing_archives),
         missing_inline_files=list(missing_inline_files),
         unused_inline_files=unused_inline_files,
+        low_usage_archives=low_usage_archives,
     )
 
     if on_progress is not None:

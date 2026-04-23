@@ -189,9 +189,12 @@ class _FilteredListPanel(ttk.Frame):
         """Fast path: attach a pre-built VirtualListModel and display it.
 
         Applies any current filter text and item_filter_fn before rendering.
+        Auto-selects the first item so the detail area is populated immediately.
         """
         self._model = model
         self._apply_filter(self._filter_var.get())
+        if len(self._model) > 0:
+            self._vlist.select(0)
 
     def load_items(self, items: list) -> None:
         """Compatibility path: build a model from *items* using *label_fn*."""
@@ -203,6 +206,25 @@ class _FilteredListPanel(ttk.Frame):
     def refresh_filter(self) -> None:
         """Re-apply the current filter (e.g. after an item_filter_fn change)."""
         self._apply_filter(self._filter_var.get())
+
+    def get_filter_text(self) -> str:
+        """Return the active filter text, or '' when the placeholder is showing."""
+        return "" if self._ph_active[0] else self._filter_var.get()
+
+    def set_filter_text(self, text: str) -> None:
+        """Set the filter entry to *text* (clears placeholder if needed)."""
+        if text:
+            self._ph_active[0] = False
+            self._filter_entry.configure(foreground="black")
+            self._filter_entry.delete(0, tk.END)
+            self._filter_entry.insert(0, text)
+            self._filter_var.set(text)
+        else:
+            self._ph_active[0] = True
+            self._filter_var.set("")
+            self._filter_entry.configure(foreground="gray")
+            self._filter_entry.delete(0, tk.END)
+            self._filter_entry.insert(0, self._filter_placeholder)
 
     def get_selected_item(self):
         """Return the currently selected item, or None."""

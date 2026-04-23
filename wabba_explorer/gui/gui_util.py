@@ -1,5 +1,6 @@
 """Pure helper functions for the wabba_explorer GUI (no tkinter dependency)."""
 
+from datetime import datetime
 import json
 import re
 from typing import TYPE_CHECKING
@@ -15,10 +16,13 @@ _PREVIEW_HEAD = 5   # first N items shown in modlist-json tab
 _PREVIEW_TAIL = 5   # last  N items shown in modlist-json tab
 
 _SEP = "\n\n" + "─" * 60 + "\n\n"
+_WABBA_FILE_KEY = "wabba file"
 
 
 def _key_label(key: str, value) -> str:
     """Return a listbox label like 'Archives [30482]'."""
+    if key == _WABBA_FILE_KEY:
+        return _WABBA_FILE_KEY
     if isinstance(value, (list, dict)):
         return f"{key} [{len(value)}]"
     return key
@@ -80,6 +84,27 @@ def _item_matches(item, text: str, pattern: re.Pattern, name_field: str, hash_fi
     return pattern.search(name_val) is not None
 
 
+def _archive_item_matches(item, text: str, pattern: re.Pattern) -> bool:
+    """Return True if *item* (an Archives entry) matches the filter *text*.
+
+    Extends :func:`_item_matches` by also searching ``State.Name`` so that
+    NexusDownloader entries can be filtered by their human-readable mod name
+    rather than just the raw filename stored in the root ``Name`` field.
+    """
+    if not isinstance(item, dict):
+        return text.lower() in str(item).lower()
+    if item.get("Hash", "") == text:
+        return True
+    if pattern.search(item.get("Name", "")) is not None:
+        return True
+    state = item.get("State")
+    if isinstance(state, dict):
+        state_name = state.get("Name") or ""
+        if state_name and pattern.search(state_name) is not None:
+            return True
+    return False
+
+
 def _truncate(s: str) -> str:
     if len(s) > _PREVIEW_MAX_CHARS:
         return s[:_PREVIEW_MAX_CHARS] + f"\n… (truncated, {len(s)} chars total)"
@@ -127,6 +152,28 @@ def _preview_value(key: str, value) -> str:
 
     s = _truncate(json.dumps(value, indent=2))
     return f"# {key}\n\n{s}"
+
+
+def _build_wabba_file_preview(path: str, file_size: int, modified_ts: float, name: str, version: str) -> str:
+    """Build synthetic 'wabba file' preview text for the main tab.
+
+    Parameters are file path, file size in bytes, modification timestamp,
+    and Name/Version values read from modlist JSON.
+    """
+    bytes_grouped = f"{file_size:,}".replace(",", "'")
+    gib = file_size / (1024 ** 3)
+    modified = datetime.fromtimestamp(modified_ts).strftime("%Y-%m-%d %H:%M:%S")
+    return "\n".join(
+        [
+            f"# {_WABBA_FILE_KEY}",
+            "",
+            f"Path: {path}",
+            f"Size: {bytes_grouped} bytes ({gib:.1f}GiB)",
+            f"Modified: {modified}",
+            f"Name: {name or 'unknown'}",
+            f"Version: {version or 'unknown'}",
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------

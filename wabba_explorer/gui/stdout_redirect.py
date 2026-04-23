@@ -13,19 +13,26 @@ class _StdoutRedirect(io.TextIOBase):
     thread via ``widget.after(0, ...)`` so Tkinter is never touched from
     a background thread.
 
-    Each line is prefixed with ``HH:MM:SS.sss `` at the point where it
-    starts (i.e. after every newline, or at the very beginning when we are
-    at the start of a new line).  The timestamp is captured when ``write``
-    is called so that background-thread messages retain their original
-    timing.
+    Each line is prefixed with ``HH:MM:SS.sss `` at the start.  The
+    timestamp is captured at the moment the complete line is assembled so
+    that background-thread messages retain their original timing.
+
+    Python's ``print()`` issues two separate ``write()`` calls — one for
+    the text and one for the trailing ``"\\n"``.  A plain per-write lock
+    would still let another thread slip in between those two calls and
+    produce merged console lines.  To prevent this, each thread buffers
+    its own partial output; only complete lines (ending with ``\\n``) are
+    emitted to the widget, making each line appear atomically.  No shared
+    lock is needed: per-thread buffers eliminate shared mutable state, and
+    CPython's GIL serialises ``widget.after()`` enqueues naturally.
     """
 
     def __init__(self, text_widget: tk.Text, original) -> None:
         self._widget = text_widget
         self._original = original
         self._main_thread_id = threading.main_thread().ident
-        self._lock = threading.Lock()
-        self._at_line_start = True  # True ⟹ next non-empty char starts a new line
+        # Per-thread state: 'buf' accumulates the current partial line.
+        self._tls = threading.local()
 
     # ------------------------------------------------------------------
 
@@ -34,53 +41,42 @@ class _StdoutRedirect(io.TextIOBase):
         now = datetime.datetime.now()
         return now.strftime("%H:%M:%S.") + f"{now.microsecond // 1000:03d} "
 
-    def _format(self, s: str) -> str:
-        """Return *s* with ``HH:MM:SS.sss `` inserted at every line start.
-
-        Mutates ``self._at_line_start`` as a side-effect.
-        Must be called while holding ``self._lock``.
-        """
-        if not s:
-            return s
-        result: list[str] = []
-        i = 0
-        while i < len(s):
-            nl = s.find("\n", i)
-            if nl == -1:
-                # No more newlines – rest is a partial line
-                chunk = s[i:]
-                if self._at_line_start and chunk:
-                    result.append(self._now_prefix())
-                    self._at_line_start = False
-                result.append(chunk)
-                break
-            # Characters up to the newline, then the newline itself
-            chunk = s[i:nl]
-            if self._at_line_start and chunk:
-                result.append(self._now_prefix())
-            result.append(chunk)
-            result.append("\n")
-            self._at_line_start = True
-            i = nl + 1
-        return "".join(result)
+    def _emit(self, s: str) -> None:
+        """Send already-formatted text to the widget (and real stdout)."""
+        if threading.current_thread().ident == self._main_thread_id:
+            self._write_to_widget(s)
+        else:
+            self._widget.after(0, self._write_to_widget, s)
 
     def write(self, s: str) -> int:
-        with self._lock:
-            formatted = self._format(s)
-        if threading.current_thread().ident == self._main_thread_id:
-            self._write_to_widget(formatted)
-        else:
-            self._widget.after(0, self._write_to_widget, formatted)
-        if self._original is not None and hasattr(self._original, "write"):
-            self._original.write(s)
+        # Accumulate into per-thread buffer; emit only complete lines so
+        # that the text and its trailing "\n" are never separated by output
+        # from another thread.  Both the real terminal and the GUI widget
+        # receive the same timestamped text.
+        buf: str = getattr(self._tls, "buf", "") + s
+        while "\n" in buf:
+            line, buf = buf.split("\n", 1)
+            formatted = self._now_prefix() + line + "\n"
+            if self._original is not None and hasattr(self._original, "write"):
+                self._original.write(formatted)
+            self._emit(formatted)
+        self._tls.buf = buf
         return len(s)
+
+    def flush(self) -> None:
+        # Emit any buffered partial line that has no trailing newline yet.
+        buf: str = getattr(self._tls, "buf", "")
+        if buf:
+            formatted = self._now_prefix() + buf
+            self._tls.buf = ""
+            if self._original is not None and hasattr(self._original, "write"):
+                self._original.write(formatted)
+            self._emit(formatted)
+        if self._original is not None and hasattr(self._original, "flush"):
+            self._original.flush()
 
     def _write_to_widget(self, s: str) -> None:
         self._widget.configure(state=tk.NORMAL)
         self._widget.insert(tk.END, s)
         self._widget.see(tk.END)
         self._widget.configure(state=tk.DISABLED)
-
-    def flush(self) -> None:
-        if self._original is not None and hasattr(self._original, "flush"):
-            self._original.flush()

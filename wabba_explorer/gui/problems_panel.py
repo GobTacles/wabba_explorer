@@ -113,6 +113,7 @@ class _ProblemsPanel(_FsTreePanel):
         missing_archives: list[str] | None = None,
         missing_inline_files: list[str] | None = None,
         unused_inline_files: list[str] | None = None,
+        low_usage_archives: list | None = None,
     ) -> None:
         total_safe = total if total > 0 else 1
         if self._progress is not None:
@@ -139,7 +140,7 @@ class _ProblemsPanel(_FsTreePanel):
 
         self.add_problem_report_line("")
         self.add_problem_report_line("Directives:")
-        self.add_problem_report_line(r"- NOTE: hash mismatch for profile\*\modlist.txt is normal")
+        self.add_problem_report_line(r"- NOTE: hash mismatch for profiles\*\modlist.txt is normal")
         if mismatch_directives:
             for item in mismatch_directives:
                 self.add_problem_report_line(f"- hash mismatch: {_directive_label(item)}")
@@ -175,6 +176,25 @@ class _ProblemsPanel(_FsTreePanel):
         if unused_inline_files:
             for uid in unused_inline_files:
                 self.add_problem_report_line(f"- unused: {uid}")
+        else:
+            self.add_problem_report_line("- None")
+
+        self.add_problem_report_line("")
+        self.add_problem_report_line("Low-usage Archives (>100 MB, <10% used by FromArchive directives):")
+        if low_usage_archives:
+            for entry in low_usage_archives:
+                a = entry["archive"]
+                archive_size = entry["archive_size"]
+                used = entry["used_bytes"]
+                pct_used = (100.0 * used / archive_size) if archive_size else 0.0
+                archive_size_mb = archive_size / (1024 * 1024)
+                used_mb = used / (1024 * 1024)
+                name = _archive_label(a)
+                self.add_problem_report_line(
+                    f"- archive={archive_size_mb:.1f}MB  "
+                    f"used={used_mb:.1f}MB ({pct_used:.1f}%)  "
+                    f"{name}"
+                )
         else:
             self.add_problem_report_line("- None")
 

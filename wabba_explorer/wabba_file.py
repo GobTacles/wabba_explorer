@@ -20,6 +20,7 @@ class WabbaFile:
     def __init__(self, path: str) -> None:
         self.path = path
         self._zip: zipfile.ZipFile | None = None
+        self._open_mode: str = "r"
         #: Cache populated by background workers after the file is opened.
         #: Created by ``WabbaExplorerApp._load_file`` and attached here so
         #: panels can reach all pre-computed data through a single object.
@@ -31,8 +32,17 @@ class WabbaFile:
 
     def open(self) -> "WabbaFile":
         """Open the archive and return *self* for chaining."""
-        self._zip = zipfile.ZipFile(self.path, "r")
+        self._zip = zipfile.ZipFile(self.path, self._open_mode)
         return self
+
+    def set_writable_mode(self, writable: bool = True) -> None:
+        """Switch default open mode between read-only and writable.
+
+        Must be called while the archive is closed.
+        """
+        if self._zip is not None:
+            raise RuntimeError("Cannot change mode while archive is open.")
+        self._open_mode = "a" if writable else "r"
 
     def close(self) -> None:
         """Close the archive handle."""

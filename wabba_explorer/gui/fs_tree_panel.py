@@ -248,6 +248,25 @@ class _FsTreePanel(ttk.Frame):
         self._type_mask = mask
         self._do_filter()
 
+    def get_filter_text(self) -> str:
+        """Return the active filter text, or '' when placeholder is showing."""
+        return "" if self._ph_active[0] else self._filter_var.get()
+
+    def set_filter_text(self, text: str) -> None:
+        """Set the filter entry to *text* (clears placeholder if needed)."""
+        if text:
+            self._ph_active[0] = False
+            self._filter_entry.configure(foreground="black")
+            self._filter_entry.delete(0, tk.END)
+            self._filter_entry.insert(0, text)
+            self._filter_var.set(text)
+        else:
+            self._ph_active[0] = True
+            self._filter_var.set("")
+            self._filter_entry.configure(foreground="gray")
+            self._filter_entry.delete(0, tk.END)
+            self._filter_entry.insert(0, _FILTER_PLACEHOLDER)
+
     def _clear_filter(self) -> None:
         """Clear the filter entry and restore the normal lazy tree."""
         self._ph_active[0] = True

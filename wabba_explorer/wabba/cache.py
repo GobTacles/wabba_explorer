@@ -54,6 +54,11 @@ class WabbaCache:
         self.archives_by_hash: dict[str, dict] = {}
         # filenames that live at the root of the wabba zip
         self.wabba_root_names: set[str] = set()
+        # UUID filename → (CRC32, uncompressed_size) for every root entry.
+        # SourceDataID and PatchID in directives are UUID filenames stored at
+        # the archive root; comparing them by content signature lets the diff
+        # logic treat differently-named but identical inline files as equal.
+        self.wabba_root_info: dict[str, tuple[int, int]] = {}
 
         # ── Phase 3: per-tab pre-computed data ──────────────────────────
         # Directives tab: $type → count

@@ -64,7 +64,7 @@ def parse_modlist(wabba, cache: WabbaCache) -> None:
 # Phase 2: common prep (must run after parse_modlist)
 # ---------------------------------------------------------------------------
 
-def run_prep(wabba, cache: WabbaCache) -> None:
+def run_prep(wabba, cache: WabbaCache, label: str = "") -> None:
     """Build shared lookup caches and signal ``cache.prep_done``.
 
     Builds:
@@ -85,15 +85,30 @@ def run_prep(wabba, cache: WabbaCache) -> None:
     }
 
     try:
-        cache.wabba_root_names = set(wabba.list_root_files())
+        root_names = wabba.list_root_files()
+        cache.wabba_root_names = set(root_names)
     except Exception:
+        root_names = []
         cache.wabba_root_names = set()
+
+    # Build wabba_root_info: UUID filename → (CRC32, uncompressed_size).
+    # Using ZipInfo metadata only – no actual decompression required.
+    root_info: dict[str, tuple[int, int]] = {}
+    for name in root_names:
+        try:
+            zi = wabba.get_zip_info(name)
+            root_info[name] = (zi.CRC, zi.file_size)
+        except Exception:
+            pass
+    cache.wabba_root_info = root_info
 
     cache.prep_done.set()
     elapsed_ms = int((time.monotonic() - t0) * 1000)
+    _label = f"[{label}] " if label else ""
     print(
-        f"[bg] common prep done  "
+        f"[bg] {_label}common prep done  "
         f"({len(cache.archives)} archives, {len(cache.wabba_root_names)} root files, "
+        f"{len(cache.wabba_root_info)} root entries with size/CRC, "
         f"{elapsed_ms} ms)"
     )
 
@@ -102,7 +117,7 @@ def run_prep(wabba, cache: WabbaCache) -> None:
 # Phase 3: per-tab prep (each waits on prep_done)
 # ---------------------------------------------------------------------------
 
-def run_archives_prep(cache: WabbaCache) -> None:
+def run_archives_prep(cache: WabbaCache, label: str = "") -> None:
     """Pre-compute archive label strings + virtual list model; signal ``archives_ready``.
 
     The archives list is already populated by :func:`parse_modlist`; this
@@ -121,10 +136,11 @@ def run_archives_prep(cache: WabbaCache) -> None:
     cache.archive_model = model
     cache.archives_ready.set()
     elapsed_ms = int((time.monotonic() - t0) * 1000)
-    print(f"[bg] archives prep done  ({len(cache.archives)} entries, {elapsed_ms} ms)")
+    _label = f"[{label}] " if label else ""
+    print(f"[bg] {_label}archives prep done  ({len(cache.archives)} entries, {elapsed_ms} ms)")
 
 
-def run_directives_prep(cache: WabbaCache) -> None:
+def run_directives_prep(cache: WabbaCache, label: str = "") -> None:
     """Pre-compute ``$type`` counts, label strings, and virtual list model; signal ``directives_ready``."""
     cache.prep_done.wait()
     if cache.cancelled:
@@ -143,10 +159,11 @@ def run_directives_prep(cache: WabbaCache) -> None:
     cache.directive_model = model
     cache.directives_ready.set()
     elapsed_ms = int((time.monotonic() - t0) * 1000)
-    print(f"[bg] directives prep done  ({len(cache.directives)} entries, {elapsed_ms} ms)")
+    _label = f"[{label}] " if label else ""
+    print(f"[bg] {_label}directives prep done  ({len(cache.directives)} entries, {elapsed_ms} ms)")
 
 
-def run_files_prep(cache: WabbaCache) -> None:
+def run_files_prep(cache: WabbaCache, label: str = "") -> None:
     """Pre-compute the normalised directive list and sorted tree order.
 
     Populates:
@@ -191,30 +208,45 @@ def run_files_prep(cache: WabbaCache) -> None:
     if cache.cancelled:
         return
 
-    # Identify folder paths (paths that are a prefix of at least one other path)
-    folder_paths: set[str] = set()
-    for norm, _ in fs_dirs:
-        parts = norm.split("/")
-        for i in range(1, len(parts)):
-            folder_paths.add("/".join(parts[:i]))
+    time.sleep(0)  # yield GIL to the main thread before heavy work
 
-    # All paths that need a tree node (including intermediate folders)
+    # Build folder_paths and all_paths in a single pass.
+    folder_paths: set[str] = set()
     all_paths: set[str] = set()
     for norm, _ in fs_dirs:
         parts = norm.split("/")
-        for i in range(1, len(parts) + 1):
-            all_paths.add("/".join(parts[:i]))
+        for i in range(len(parts)):
+            prefix = "/".join(parts[: i + 1])
+            all_paths.add(prefix)
+            if i < len(parts) - 1:
+                folder_paths.add(prefix)
 
-    def _sort_key(path: str):
+    if cache.cancelled:
+        return
+
+    time.sleep(0)  # yield GIL before sort-key pre-computation
+
+    # Pre-compute sort keys once so the sort uses dict.__getitem__ (a C call)
+    # instead of a Python function that allocates a new list on every comparison.
+    # This avoids O(n log n) list allocations and dramatically reduces GIL hold time.
+    sort_keys: dict[str, tuple] = {}
+    for path in all_paths:
         parts = path.split("/")
-        return [
+        sort_keys[path] = tuple(
             (0 if "/".join(parts[: i + 1]) in folder_paths else 1, parts[i].lower())
             for i in range(len(parts))
-        ]
+        )
+
+    if cache.cancelled:
+        return
+
+    time.sleep(0)  # yield GIL before sort
 
     cache.fs_folder_paths = folder_paths
-    sorted_paths = sorted(all_paths, key=_sort_key)
+    sorted_paths = sorted(all_paths, key=sort_keys.__getitem__)
     cache.fs_sorted_paths = sorted_paths
+
+    time.sleep(0)  # yield GIL after sort, before children-map build
 
     # Build children map: parent_path → sorted list of direct child paths.
     # Since sorted_paths is already in the desired tree order, iterating it
@@ -230,4 +262,5 @@ def run_files_prep(cache: WabbaCache) -> None:
 
     cache.files_ready.set()
     elapsed_ms = int((time.monotonic() - t0) * 1000)
-    print(f"[bg] files prep done  ({len(cache.fs_sorted_paths)} tree nodes, {elapsed_ms} ms)")
+    _label = f"[{label}] " if label else ""
+    print(f"[bg] {_label}files prep done  ({len(cache.fs_sorted_paths)} tree nodes, {elapsed_ms} ms)")

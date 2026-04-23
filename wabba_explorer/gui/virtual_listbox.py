@@ -94,6 +94,15 @@ class _VirtualListbox(tk.Frame):
     def focus(self) -> None:
         self._canvas.focus_set()
 
+    def select(self, pos: int) -> None:
+        """Programmatically select row *pos* and fire the on_select callback."""
+        if self._model is None or pos < 0 or pos >= len(self._model):
+            return
+        self._selected = pos
+        self._schedule_render()
+        if self._on_select:
+            self._on_select(pos)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
