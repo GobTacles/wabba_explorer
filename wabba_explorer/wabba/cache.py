@@ -16,6 +16,9 @@ a file is opened.  Background threads populate it in three phases:
 
 GUI panels read from the cache; ``threading.Event`` objects synchronise
 producers and consumers.  Set ``cancelled = True`` to abort all workers.
+
+A separate :class:`DiffCache` is created for each compare session and holds
+pre-computed diff results for the ``D:Archives`` and ``D:Directives`` tabs.
 """
 
 import threading
@@ -79,6 +82,10 @@ class WabbaCache:
         self.fs_children: dict[str, list[str]] | None = None
         # Files tab: file-path → OR of FS_FLAG_* for every directive targeting it
         self.fs_path_flags: dict[str, int] = {}
+        # Archives tab: hash → list of directives that reference this archive
+        # (via ArchiveHashPath[0] or Hash on FromArchive / PatchedFromArchive).
+        # Built during run_archives_prep; read-only once archives_ready is set.
+        self.archive_to_directives: dict[str, list[dict]] = {}
         # Problems tab: last partial result for live progress display
         self.analysis_progress: "AnalysisResult | None" = None
         # Problems tab: completed analysis result (None while in-progress)
@@ -94,4 +101,34 @@ class WabbaCache:
 
         # ── Cancellation ────────────────────────────────────────────────
         # Set to True to abort all workers associated with this cache.
+        self.cancelled: bool = False
+
+
+class DiffCache:
+    """Holds pre-computed diff results for a single compare session.
+
+    Created once when compare mode starts and cancelled/discarded when the
+    session ends.  Background threads write to it exactly once (after
+    signalling the corresponding ``*_ready`` event the data becomes
+    read-only), so no per-access locking is needed.
+
+    Population sequence::
+
+        run_diff_archives_prep(cache_a, cache_b, diff_cache)
+            waits on cache_a.archives_ready + cache_b.archives_ready
+            → fills diff_archives_items, signals diff_archives_ready
+
+        run_diff_directives_prep(cache_a, cache_b, diff_cache)
+            waits on cache_a.directives_ready + cache_b.directives_ready
+            → fills diff_directives_items, signals diff_directives_ready
+    """
+
+    def __init__(self) -> None:
+        # D:Archives tab pre-computed diff items
+        self.diff_archives_items: list[dict] = []
+        self.diff_archives_ready: threading.Event = threading.Event()
+        # D:Directives tab pre-computed diff items
+        self.diff_directives_items: list[dict] = []
+        self.diff_directives_ready: threading.Event = threading.Event()
+        # Set to True to abort all workers associated with this diff cache.
         self.cancelled: bool = False

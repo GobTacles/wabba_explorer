@@ -11,13 +11,24 @@ Typical call sequence (each step can be in a separate thread)::
     run_archives_prep(cache)             # builds label strings + model
     run_directives_prep(cache)           # counts $types, builds label strings + model
     run_files_prep(cache)                # builds sorted fs-tree data + children map
+
+For compare mode, after both side caches have been loaded::
+
+    run_diff_archives_prep(cache_a, cache_b, diff_cache)
+    run_diff_directives_prep(cache_a, cache_b, diff_cache)
+
+The high-level :func:`run_pipeline` function orchestrates the single-file
+loading sequence and accepts callbacks so it can be driven from any context
+(GUI or tests) without importing tkinter.
 """
 
 import json
+import threading
 import time
 from collections import Counter
+from typing import Callable
 
-from .cache import WabbaCache
+from .cache import WabbaCache, DiffCache
 from .cache import FS_FLAG_INLINE, FS_FLAG_FROM_ARCHIVE, FS_FLAG_PATCHED, FS_FLAG_OTHER
 from .label_util import archive_label, directive_label
 from .virtual_list_model import VirtualListModel
@@ -134,6 +145,22 @@ def run_archives_prep(cache: WabbaCache, label: str = "") -> None:
     model = VirtualListModel()
     model.set_data(cache.archives, labels)
     cache.archive_model = model
+
+    # Build archive_to_directives index: hash → [directive, …]
+    # Single pass over all directives; covers FromArchive and PatchedFromArchive.
+    atd: dict[str, list[dict]] = {}
+    for d in cache.directives:
+        if not isinstance(d, dict):
+            continue
+        dtype = d.get("$type", "")
+        if dtype not in ("FromArchive", "PatchedFromArchive"):
+            continue
+        ahp = d.get("ArchiveHashPath")
+        h = (ahp[0] if ahp else None) or d.get("Hash", "")
+        if h:
+            atd.setdefault(h, []).append(d)
+    cache.archive_to_directives = atd
+
     cache.archives_ready.set()
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     _label = f"[{label}] " if label else ""
@@ -264,3 +291,154 @@ def run_files_prep(cache: WabbaCache, label: str = "") -> None:
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     _label = f"[{label}] " if label else ""
     print(f"[bg] {_label}files prep done  ({len(cache.fs_sorted_paths)} tree nodes, {elapsed_ms} ms)")
+
+
+# ---------------------------------------------------------------------------
+# High-level pipeline orchestrator (GUI-agnostic)
+# ---------------------------------------------------------------------------
+
+def run_pipeline(
+    wabba,
+    cache: WabbaCache,
+    label: str = "",
+    *,
+    on_phase1_done,
+    on_pipeline_started,
+    extra_workers: "list[Callable[[], None]] | None" = None,
+) -> None:
+    """Run the full single-file loading pipeline in the calling thread.
+
+    Intended to be run inside a ``threading.Thread`` started by the GUI.
+    Uses only callbacks to communicate results back – no tkinter dependency.
+
+    Sequence:
+
+    1. ``parse_modlist`` → ``on_phase1_done(wabba, cache)``
+    2. ``run_prep``
+    3. Launch per-tab prep threads (archives, directives, files)
+       + any *extra_workers* (e.g. the problems-analysis thread).
+    4. ``on_pipeline_started(cache)``
+
+    Parameters
+    ----------
+    wabba:
+        Open ``WabbaFile`` instance.
+    cache:
+        ``WabbaCache`` attached to *wabba*.
+    label:
+        Short side label for log messages (``"A"``, ``"B"``, or ``""``).
+    on_phase1_done:
+        ``callable(wabba, cache)`` – called immediately after
+        ``parse_modlist`` so the main/modlist tab can be populated
+        without waiting for the heavier prep steps.
+    on_pipeline_started:
+        ``callable(cache)`` – called after all per-tab threads have
+        been launched, signalling the UI to begin tab-ready polling.
+    extra_workers:
+        Optional list of zero-argument callables to launch as daemon
+        threads alongside the three standard per-tab prep threads.
+    """
+    parse_modlist(wabba, cache)
+    on_phase1_done(wabba, cache)
+
+    if cache.cancelled:
+        return
+    run_prep(wabba, cache, label=label)
+
+    if cache.cancelled:
+        return
+
+    _side = f"[{label}] " if label else ""
+    print(f"[wabba_explorer] {_side}Archives: {len(cache.archives)} entries")
+    print(f"[wabba_explorer] {_side}Directives: {len(cache.directives)} entries")
+
+    threading.Thread(
+        target=run_archives_prep, args=(cache,), kwargs={"label": label}, daemon=True
+    ).start()
+    threading.Thread(
+        target=run_directives_prep, args=(cache,), kwargs={"label": label}, daemon=True
+    ).start()
+    threading.Thread(
+        target=run_files_prep, args=(cache,), kwargs={"label": label}, daemon=True
+    ).start()
+
+    for worker in (extra_workers or []):
+        threading.Thread(target=worker, daemon=True).start()
+
+    on_pipeline_started(cache)
+
+
+# ---------------------------------------------------------------------------
+# Compare-mode diff prep
+# ---------------------------------------------------------------------------
+
+def run_diff_archives_prep(
+    cache_a: WabbaCache,
+    cache_b: WabbaCache,
+    diff_cache: DiffCache,
+    label: str = "",
+) -> None:
+    """Pre-compute the archive diff and signal ``diff_cache.diff_archives_ready``.
+
+    Waits for both ``cache_a.archives_ready`` and ``cache_b.archives_ready``
+    before calling :func:`wabba.diff.diff_archives`.  The result is stored in
+    ``diff_cache.diff_archives_items`` and then the event is set so the GUI
+    can populate the ``D:Archives`` tab without blocking.
+    """
+    cache_a.archives_ready.wait()
+    if diff_cache.cancelled:
+        return
+    cache_b.archives_ready.wait()
+    if diff_cache.cancelled:
+        return
+
+    from .diff import diff_archives
+    t0 = time.monotonic()
+    diff_cache.diff_archives_items = diff_archives(cache_a, cache_b)
+    diff_cache.diff_archives_ready.set()
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    items = diff_cache.diff_archives_items
+    updated = sum(1 for i in items if i.get("_diff_side") == "updated")
+    removed = sum(1 for i in items if i.get("_diff_side") == "removed")
+    added = sum(1 for i in items if i.get("_diff_side") == "added")
+    _label = f"[{label}] " if label else ""
+    print(
+        f"[bg] {_label}diff archives prep done  "
+        f"({updated} updated, {removed} removed, {added} added, {elapsed_ms} ms)"
+    )
+
+
+def run_diff_directives_prep(
+    cache_a: WabbaCache,
+    cache_b: WabbaCache,
+    diff_cache: DiffCache,
+    label: str = "",
+) -> None:
+    """Pre-compute the directive diff and signal ``diff_cache.diff_directives_ready``.
+
+    Waits for both ``cache_a.directives_ready`` and ``cache_b.directives_ready``
+    (which also guarantees ``wabba_root_info`` is populated since it is built
+    during ``run_prep``, which ``run_directives_prep`` waits on).
+    """
+    cache_a.directives_ready.wait()
+    if diff_cache.cancelled:
+        return
+    cache_b.directives_ready.wait()
+    if diff_cache.cancelled:
+        return
+
+    from .diff import diff_directives
+    t0 = time.monotonic()
+    diff_cache.diff_directives_items = diff_directives(cache_a, cache_b)
+    diff_cache.diff_directives_ready.set()
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    items = diff_cache.diff_directives_items
+    a_only = sum(1 for i in items if i.get("_diff_side") == "A only")
+    b_only = sum(1 for i in items if i.get("_diff_side") == "B only")
+    changed = sum(1 for i in items if i.get("_diff_side") == "changed") // 2
+    _label = f"[{label}] " if label else ""
+    print(
+        f"[bg] {_label}diff directives prep done  "
+        f"({a_only} A-only, {b_only} B-only, {changed} changed pairs, "
+        f"{len(items)} total rows, {elapsed_ms} ms)"
+    )

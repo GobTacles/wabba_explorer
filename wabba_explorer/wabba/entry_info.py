@@ -6,6 +6,10 @@ dependency, so they can be used from both the GUI and the CLI.
 
 import base64
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .cache import WabbaCache
 
 from ..WabbaHash import WabbaHashXX64, WabbaHashXX64_stream
 
@@ -130,8 +134,18 @@ def get_directive_detail_text(item: dict, archives_by_hash: dict, wabba) -> str:
 # Archive cross-reference
 # ---------------------------------------------------------------------------
 
-def get_archive_directives_text(archive_item: dict, all_directives: list) -> str:
+def get_archive_directives_text(
+    archive_item: dict,
+    all_directives: list,
+    cache: "WabbaCache | None" = None,
+) -> str:
     """Return text listing all directives that reference *archive_item* by hash.
+
+    When *cache* is provided and ``cache.archive_to_directives`` is populated
+    (set during ``run_archives_prep``) a direct O(1) dict lookup is used
+    instead of scanning all 300k+ directives linearly.  When *cache* is
+    absent or the index is empty, the function falls back to the linear scan
+    over *all_directives* for backward compatibility (CLI, tests, etc.).
 
     Returns an empty string when no directives reference the archive.
     """
@@ -139,14 +153,20 @@ def get_archive_directives_text(archive_item: dict, all_directives: list) -> str
     if not archive_hash:
         return ""
 
-    matches = []
-    for d in all_directives:
-        if not isinstance(d, dict):
-            continue
-        ahp = d.get("ArchiveHashPath")
-        lookup_hash = (ahp[0] if ahp else None) or d.get("Hash", "")
-        if lookup_hash == archive_hash:
-            matches.append(d)
+    # Fast path: use pre-built index from WabbaCache.
+    atd = getattr(cache, "archive_to_directives", None)
+    if atd:
+        matches = atd.get(archive_hash, [])
+    else:
+        # Fallback: linear scan (kept for CLI / test / legacy callers).
+        matches = []
+        for d in all_directives:
+            if not isinstance(d, dict):
+                continue
+            ahp = d.get("ArchiveHashPath")
+            lookup_hash = (ahp[0] if ahp else None) or d.get("Hash", "")
+            if lookup_hash == archive_hash:
+                matches.append(d)
 
     total = len(matches)
     if total == 0:

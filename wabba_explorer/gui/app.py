@@ -6,7 +6,7 @@ from tkinter import ttk
 
 from .. import __version__
 from ..wabba_file import WabbaFile
-from ..wabba.cache import WabbaCache
+from ..wabba.cache import WabbaCache, DiffCache
 from .stdout_redirect import _StdoutRedirect
 from .gui_menu import _MenuMixin
 from .gui_about import _AboutMixin
@@ -70,6 +70,8 @@ class WabbaExplorerApp(
         self._diff_archives_panel = None
         # The D:Directives filtered list panel (compare mode only).
         self._diff_directives_panel = None
+        # Pre-computed diff results for the current compare session.
+        self._diff_cache: DiffCache | None = None
 
         # Single-file mode compat attrs (set by tab builders when wabba=None).
         self._archives_panel = None
@@ -193,6 +195,11 @@ class WabbaExplorerApp(
         self._diff_directives_panel = None
         self._prev_tab_text = ""
 
+        # Cancel the old diff cache if one was running.
+        if self._diff_cache is not None:
+            self._diff_cache.cancelled = True
+            self._diff_cache = None
+
         # Cancel and close any compare WabbaFiles still running (from previous
         # compare session).  We find them by scanning tab_dispatch of the
         # *old* session – but since we already cleared it, we instead use the
@@ -288,6 +295,26 @@ class WabbaExplorerApp(
                 tab_prefix=prefix,
                 problems_panel=problems_panel,
             )
+
+        # Create a fresh DiffCache and launch the background diff workers.
+        # They wait internally on cache_a/cache_b ready events before computing.
+        import threading as _threading
+        from ..wabba.loader import run_diff_archives_prep, run_diff_directives_prep
+        diff_cache = DiffCache()
+        self._diff_cache = diff_cache
+        cache_a = wabba_a.cache
+        cache_b = wabba_b.cache
+        _threading.Thread(
+            target=run_diff_archives_prep,
+            args=(cache_a, cache_b, diff_cache),
+            daemon=True,
+        ).start()
+        _threading.Thread(
+            target=run_diff_directives_prep,
+            args=(cache_a, cache_b, diff_cache),
+            daemon=True,
+        ).start()
+
         self._remember_compare_files(path_a, path_b)
         print(f"[wabba_explorer] compare mode ready  ({int((time.monotonic()-_cmp_t0)*1000)} ms total)")
 
@@ -435,6 +462,9 @@ class WabbaExplorerApp(
                 if cw.cache is not None:
                     cw.cache.cancelled = True
                 cw.close()
+        if self._diff_cache is not None:
+            self._diff_cache.cancelled = True
+            self._diff_cache = None
         super().destroy()
 
 

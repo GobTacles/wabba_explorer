@@ -11,7 +11,7 @@ from tkinter import messagebox
 from .. import __version__
 from ..wabba_file import WabbaFile
 from ..wabba.cache import WabbaCache
-from ..wabba.loader import parse_modlist, run_prep, run_archives_prep, run_directives_prep, run_files_prep
+from ..wabba.loader import run_pipeline
 from .gui_util import _key_label
 from .gui_util import _WABBA_FILE_KEY, _build_wabba_file_preview
 
@@ -126,46 +126,33 @@ class _BackgroundLoaderMixin:
         problems_panel,
         tab_prefix: str = "",
     ) -> None:
-        """Background thread: parse JSON → prep → launch per-tab workers."""
-        # Derive short label ("A", "B", or "") from tab_prefix ("A:", "B:", "").
+        """Background thread: thin adapter over :func:`wabba.loader.run_pipeline`.
+
+        Translates the two GUI-agnostic ``run_pipeline`` callbacks into
+        ``self.after(0, …)`` GUI-thread dispatches.
+        """
         _label = tab_prefix.rstrip(":") if tab_prefix else ""
 
-        # ── Phase 1: parse modlist JSON ──────────────────────────────────
-        parse_modlist(wabba, cache)
+        def _on_phase1_done(_wabba: WabbaFile, _cache: WabbaCache) -> None:
+            self.after(
+                0,
+                self._on_modlist_parsed,
+                _wabba, _cache, main_info, problems_panel, tab_prefix,
+            )
 
-        # Notify UI so the main/modlist tab can be populated without waiting for prep.
-        self.after(0, self._on_modlist_parsed, wabba, cache, main_info, problems_panel, tab_prefix)
+        def _on_pipeline_started(_cache: WabbaCache) -> None:
+            self.after(0, self._on_tab_changed)
 
-        # ── Phase 2: common prep (build shared lookup caches) ────────────
-        if cache.cancelled:
-            return
-        run_prep(wabba, cache, label=_label)
-
-        if cache.cancelled:
-            return
-
-        _side = f"[{_label}] " if _label else ""
-        print(f"[wabba_explorer] {_side}Archives: {len(cache.archives)} entries")
-        print(f"[wabba_explorer] {_side}Directives: {len(cache.directives)} entries")
-
-        # ── Phase 3: per-tab prep (all start in parallel) ────────────────
-        threading.Thread(
-            target=run_archives_prep, args=(cache,), kwargs={"label": _label}, daemon=True
-        ).start()
-        threading.Thread(
-            target=run_directives_prep, args=(cache,), kwargs={"label": _label}, daemon=True
-        ).start()
-        threading.Thread(
-            target=run_files_prep, args=(cache,), kwargs={"label": _label}, daemon=True
-        ).start()
-        threading.Thread(
-            target=self._run_problems_worker,
-            args=(cache, wabba, problems_panel),
-            daemon=True,
-        ).start()
-
-        # Notify UI that background workers are running so tabs can start polling.
-        self.after(0, self._on_tab_changed)
+        run_pipeline(
+            wabba,
+            cache,
+            _label,
+            on_phase1_done=_on_phase1_done,
+            on_pipeline_started=_on_pipeline_started,
+            extra_workers=[
+                lambda: self._run_problems_worker(cache, wabba, problems_panel),
+            ],
+        )
 
     def _on_modlist_parsed(
         self,

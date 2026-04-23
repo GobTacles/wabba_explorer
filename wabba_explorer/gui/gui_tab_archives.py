@@ -91,7 +91,7 @@ class _TabArchives:
             cache = w.cache if w else None
             directives = cache.directives if cache else []
             parts = []
-            directives_text = get_archive_directives_text(archive_item, directives)
+            directives_text = get_archive_directives_text(archive_item, directives, cache)
             if directives_text:
                 parts.append(directives_text)
             meta_content = generate_meta(archive_item)

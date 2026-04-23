@@ -1,10 +1,14 @@
 """Cross-file diff helpers for compare mode.
 
-The main entry point is :func:`diff_directives`, which compares the
-``Directives`` lists from two open ``WabbaCache`` objects and returns
-the items that differ.
+Two entry points are provided:
 
-Key challenge – UUID normalization:
+* :func:`diff_directives` – compares the ``Directives`` lists from two
+  ``WabbaCache`` objects and returns items that differ.
+* :func:`diff_archives` – compares the ``Archives`` lists from two
+  ``WabbaCache`` objects, classifying each as ``removed``, ``added``, or
+  ``updated`` (same mod, different version).
+
+Key challenge – UUID normalization (directives only):
   ``SourceDataID`` and ``PatchID`` fields are UUID filenames stored at the
   root of the ``.wabbajack`` zip archive.  When two modlist versions are
   compared those UUIDs are *not* expected to be identical, but the content
@@ -17,6 +21,7 @@ Key challenge – UUID normalization:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -129,3 +134,148 @@ def diff_directives(
                 result.append(item_b)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Archive diff
+# ---------------------------------------------------------------------------
+
+# Pre-compiled patterns used by _mod_key().
+_LL_RE = re.compile(r"https?://(?:www\.)?loverslab\.com/files/file/(\d+)")
+_WJ_PREFIX = "https://authored-files.wabbajack.org/"
+_WJ_FILE_RE = re.compile(r"[^_\-]+")
+_WJ_VER_RE = re.compile(r"\s+\d[\d.]*(\.\w+)$")
+
+
+def _mod_key(archive: dict) -> "tuple | None":
+    """Return a stable identity key for *archive* that survives version changes.
+
+    Supported sources:
+
+    * **Nexus** – ``State.$type`` contains ``"NexusDownloader"``;
+      key = ``("nexus", ModID)``.
+    * **LoversLab** – ``State.Url`` matches
+      ``https[s]://[www.]loverslab.com/files/file/<id>[...]``;
+      key = ``("ll", id)``.
+    * **WabbajackAuthored** – ``State.Url`` starts with
+      ``https://authored-files.wabbajack.org/<name>[_-]...``;
+      key = ``("wj", prefix_url_up_to_first_dash_or_underscore)``
+      (``%20`` is normalised to space; trailing version numbers of the
+      form ``" 7.30.7z"`` are stripped to ``".7z"``).
+
+    Returns ``None`` when no identity can be determined.
+    """
+    state = archive.get("State")
+    if not isinstance(state, dict):
+        return None
+    # Nexus
+    if "NexusDownloader" in state.get("$type", ""):
+        mid = state.get("ModID")
+        if mid is not None:
+            return ("nexus", mid)
+    url = state.get("Url") or ""
+    # LoversLab
+    m = _LL_RE.match(url)
+    if m:
+        return ("ll", int(m.group(1)))
+    # authored-files.wabbajack.org
+    if url.startswith(_WJ_PREFIX):
+        m = _WJ_FILE_RE.match(url[len(_WJ_PREFIX):])
+        if m:
+            base = m.group(0).replace("%20", " ")
+            base = _WJ_VER_RE.sub(r"\1", base)
+            return ("wj", _WJ_PREFIX + base)
+    return None
+
+
+def diff_archives(
+    cache_a: "WabbaCache",
+    cache_b: "WabbaCache",
+) -> list[dict]:
+    """Compare archives from two caches and return items that differ.
+
+    Each archive entry is classified as one of:
+
+    * **removed** – present in A, absent in B.
+    * **added**   – present in B, absent in A.
+    * **updated** – A-only and B-only archives that share the same mod
+      identity key (e.g. same Nexus ModID).  Only 1-to-1 pairings are
+      merged; if a key appears more than once on either side all its
+      entries stay as individual ``removed``/``added`` items.
+
+    Each returned dict is a copy of the original archive dict augmented
+    with extra keys:
+
+    * ``_diff_side`` – ``"removed"``, ``"added"``, or ``"updated"``
+    * For ``"updated"`` items additionally: ``_diff_wabba="A"``,
+      ``_ver_a``, ``_ver_b``, ``_b_archive``.
+
+    Items are ordered: updated pairs first (sorted by mod name), then
+    remaining A-only (removed), then remaining B-only (added).
+    """
+    hashes_a = set(cache_a.archives_by_hash.keys())
+    hashes_b = set(cache_b.archives_by_hash.keys())
+
+    only_in_a = hashes_a - hashes_b
+    only_in_b = hashes_b - hashes_a
+
+    # mod key → list of archive dicts for A-only / B-only sides
+    mods_a: dict[tuple, list[dict]] = {}
+    for h in only_in_a:
+        arch = cache_a.archives_by_hash[h]
+        key = _mod_key(arch)
+        if key is not None:
+            mods_a.setdefault(key, []).append(arch)
+
+    mods_b: dict[tuple, list[dict]] = {}
+    for h in only_in_b:
+        arch = cache_b.archives_by_hash[h]
+        key = _mod_key(arch)
+        if key is not None:
+            mods_b.setdefault(key, []).append(arch)
+
+    # Only merge when exactly one entry per side shares that key.
+    shared_mod_ids = {
+        key
+        for key in set(mods_a) & set(mods_b)
+        if len(mods_a[key]) == 1 and len(mods_b[key]) == 1
+    }
+
+    # Hashes absorbed into "updated" pairs (excluded from removed/added).
+    updated_hashes_a = {mods_a[key][0]["Hash"] for key in shared_mod_ids}
+    updated_hashes_b = {mods_b[key][0]["Hash"] for key in shared_mod_ids}
+
+    diff_items: list[dict] = []
+
+    # Add "updated" entries, sorted by mod name for readability.
+    def _mod_sort_key(key: tuple) -> str:
+        arch = mods_a[key][0]
+        state = arch.get("State") or {}
+        return (state.get("Name") or arch.get("Name", "")).lower()
+
+    for mid in sorted(shared_mod_ids, key=_mod_sort_key):
+        arch_a = mods_a[mid][0]
+        arch_b = mods_b[mid][0]
+        state_a = arch_a.get("State") or {}
+        state_b = arch_b.get("State") or {}
+        item = dict(arch_a)
+        item["_diff_side"] = "updated"
+        item["_diff_wabba"] = "A"
+        item["_ver_a"] = state_a.get("Version", "?") or "?"
+        item["_ver_b"] = state_b.get("Version", "?") or "?"
+        item["_b_archive"] = dict(arch_b)
+        diff_items.append(item)
+
+    # Add remaining A-only items (not part of an update pair).
+    for h in sorted(only_in_a - updated_hashes_a):
+        item = dict(cache_a.archives_by_hash[h])
+        item["_diff_side"] = "removed"
+        diff_items.append(item)
+
+    # Add remaining B-only items (not part of an update pair).
+    for h in sorted(only_in_b - updated_hashes_b):
+        item = dict(cache_b.archives_by_hash[h])
+        item["_diff_side"] = "added"
+        diff_items.append(item)
+
+    return diff_items

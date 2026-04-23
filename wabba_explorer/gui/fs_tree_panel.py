@@ -294,52 +294,26 @@ class _FsTreePanel(ttk.Frame):
             self._insert_lazy_root(cache)
             return
 
-        t0 = time.monotonic()
-        pattern = _build_name_pattern(text) if text else None
+        from ..wabba.fs_filter import compute_filtered_paths
 
+        t0 = time.monotonic()
         fp = cache.fs_folder_paths or set()
         sorted_paths = cache.fs_sorted_paths or []
         total_files = sum(1 for p in sorted_paths if p not in fp)
 
-        if text and pattern is None:
-            # Invalid filter pattern - show nothing
-            self._tree.delete(*self._tree.get_children())
-            self._filter_count_var.set("0 files")
-            elapsed_ms = int((time.monotonic() - t0) * 1000)
-            print(f"[filter:files] '{text}'  {total_files} -> 0  ({elapsed_ms} ms)")
-            return
+        if text:
+            pattern = _build_name_pattern(text)
+            if pattern is None:
+                # Invalid filter pattern – show nothing.
+                self._tree.delete(*self._tree.get_children())
+                self._filter_count_var.set("0 files")
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                print(f"[filter:files] '{text}'  {total_files} -> 0  ({elapsed_ms} ms)")
+                return
+        else:
+            pattern = None
 
-        # Determine which file paths survive both filters, then propagate
-        # their ancestor folders into the visible set.
-        visible: set[str] = set()
-        match_count = 0
-        for path in sorted_paths:
-            if path in fp:
-                continue  # folder – decided by descendants
-            # Text filter
-            if pattern is not None:
-                basename = path.rsplit("/", 1)[-1]
-                if pattern.search(basename) is None:
-                    continue
-            # Type filter
-            if type_filter_active:
-                if not (self._fs_path_flags.get(path, 0) & type_mask):
-                    continue
-                # Suppress meta.ini files inside mods/<subfolder>/
-                # (noise entries that only clutter the type-filtered view)
-                parts_check = path.split("/")
-                if (
-                    len(parts_check) >= 3
-                    and parts_check[0].lower() == "mods"
-                    and parts_check[-1].lower() == "meta.ini"
-                ):
-                    continue
-            match_count += 1
-            visible.add(path)
-            # Mark all ancestor folders visible too
-            parts = path.split("/")
-            for i in range(1, len(parts)):
-                visible.add("/".join(parts[:i]))
+        visible, match_count = compute_filtered_paths(pattern, type_mask, cache)
 
         # Rebuild tree with only visible nodes (in sorted order, no lazy load)
         self._tree.delete(*self._tree.get_children())
