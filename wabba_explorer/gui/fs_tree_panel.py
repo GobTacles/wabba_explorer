@@ -12,6 +12,13 @@ from tkinter import ttk
 from ..wabba_file import WabbaFile
 from ..wabba.entry_info import get_node_preview_lines
 from ..wabba.cache import FS_FLAG_INLINE, FS_FLAG_FROM_ARCHIVE, FS_FLAG_PATCHED, FS_FLAG_OTHER, FS_FLAG_ALL
+from .gui_inline_edit import (
+    _do_replace_inline,
+    _do_delete_inline,
+    _do_add_inline_in_folder,
+    _do_add_inline_with_path,
+    _do_convert_fromarchive_to_inline,
+)
 from .gui_util import _build_name_pattern, _get_extract_source_id, _do_extract_inline
 from .tooltip import _Tooltip
 
@@ -35,7 +42,17 @@ class _FsTreePanel(ttk.Frame):
       uncompressed size is below 256 KiB, a text preview of the packed data.
     """
 
-    def __init__(self, parent, **kwargs) -> None:
+    def __init__(
+        self,
+        parent,
+        *,
+        allow_replace: bool = False,
+        on_replace_success=None,
+        on_queue_upsert=None,
+        on_apply_now=None,
+        on_save_as_now=None,
+        **kwargs,
+    ) -> None:
         super().__init__(parent, **kwargs)
         self._all_directives: list[tuple[str, dict]] = []  # (norm_path, directive)
         self._wabba: WabbaFile | None = None
@@ -52,6 +69,12 @@ class _FsTreePanel(ttk.Frame):
         self._selected_directive: dict | None = None
         self._selected_path: str = ""
         self._selected_is_folder: bool = False
+        self._allow_replace = bool(allow_replace)
+        self._on_replace_success = on_replace_success
+        self._on_queue_upsert = on_queue_upsert
+        self._on_apply_now = on_apply_now
+        self._on_save_as_now = on_save_as_now
+        self._replace_busy: bool = False
         self._build()
 
     def _build(self) -> None:
@@ -148,6 +171,47 @@ class _FsTreePanel(ttk.Frame):
             command=self._on_extract_click,
         )
         self._extract_btn.pack(side=tk.LEFT, padx=2, pady=2)
+        self._replace_btn = None
+        self._delete_btn = None
+        self._add_inline_btn = None
+        self._add_inline_with_path_btn = None
+        self._convert_btn = None
+        if self._allow_replace:
+            self._replace_btn = ttk.Button(
+                tools_frame,
+                text="Replace InlineFile",
+                state=tk.DISABLED,
+                command=self._on_replace_click,
+            )
+            self._replace_btn.pack(side=tk.LEFT, padx=2, pady=2)
+            self._delete_btn = ttk.Button(
+                tools_frame,
+                text="Remove InlineFile + directive",
+                state=tk.DISABLED,
+                command=self._on_delete_click,
+            )
+            self._delete_btn.pack(side=tk.LEFT, padx=2, pady=2)
+            self._add_inline_btn = ttk.Button(
+                tools_frame,
+                text="add InlineFile in this folder",
+                state=tk.DISABLED,
+                command=self._on_add_inline_click,
+            )
+            self._add_inline_btn.pack(side=tk.LEFT, padx=2, pady=2)
+            self._add_inline_with_path_btn = ttk.Button(
+                tools_frame,
+                text="add InlineFile with path",
+                state=tk.DISABLED,
+                command=self._on_add_inline_with_path_click,
+            )
+            self._add_inline_with_path_btn.pack(side=tk.LEFT, padx=2, pady=2)
+            self._convert_btn = ttk.Button(
+                tools_frame,
+                text="replace by new InlineFile",
+                state=tk.DISABLED,
+                command=self._on_convert_click,
+            )
+            self._convert_btn.pack(side=tk.LEFT, padx=2, pady=2)
 
         self._preview = tk.Text(
             right, wrap=tk.WORD, state=tk.DISABLED, font=("Consolas", 9)
@@ -170,6 +234,16 @@ class _FsTreePanel(ttk.Frame):
         self._selected_path = ""
         self._selected_is_folder = False
         self._extract_btn.configure(state=tk.DISABLED)
+        if self._replace_btn is not None:
+            self._replace_btn.configure(state=tk.DISABLED)
+        if self._delete_btn is not None:
+            self._delete_btn.configure(state=tk.DISABLED)
+        if self._add_inline_btn is not None:
+            self._add_inline_btn.configure(state=tk.DISABLED)
+        if self._add_inline_with_path_btn is not None:
+            self._add_inline_with_path_btn.configure(state=tk.DISABLED)
+        if self._convert_btn is not None:
+            self._convert_btn.configure(state=tk.DISABLED)
         self._tree.insert("", tk.END, text="Loading\u2026")
 
     def load_from_precomputed(
@@ -476,6 +550,57 @@ class _FsTreePanel(ttk.Frame):
         else:
             self._extract_btn.configure(state=tk.DISABLED)
 
+        if self._replace_btn is not None:
+            if (
+                self._allow_replace
+                and not self._replace_busy
+                and not self._selected_is_folder
+                and d is not None
+                and self._wabba is not None
+                and d.get("$type") == "InlineFile"
+            ):
+                self._replace_btn.configure(state=tk.NORMAL)
+            else:
+                self._replace_btn.configure(state=tk.DISABLED)
+
+        if self._delete_btn is not None:
+            if (
+                self._allow_replace
+                and not self._replace_busy
+                and not self._selected_is_folder
+                and d is not None
+                and self._wabba is not None
+                and d.get("$type") == "InlineFile"
+            ):
+                self._delete_btn.configure(state=tk.NORMAL)
+            else:
+                self._delete_btn.configure(state=tk.DISABLED)
+
+        if self._add_inline_btn is not None:
+            if self._allow_replace and not self._replace_busy and self._wabba is not None:
+                self._add_inline_btn.configure(state=tk.NORMAL)
+            else:
+                self._add_inline_btn.configure(state=tk.DISABLED)
+
+        if self._add_inline_with_path_btn is not None:
+            if self._allow_replace and not self._replace_busy and self._wabba is not None:
+                self._add_inline_with_path_btn.configure(state=tk.NORMAL)
+            else:
+                self._add_inline_with_path_btn.configure(state=tk.DISABLED)
+
+        if self._convert_btn is not None:
+            if (
+                self._allow_replace
+                and not self._replace_busy
+                and not self._selected_is_folder
+                and d is not None
+                and self._wabba is not None
+                and d.get("$type") == "FromArchive"
+            ):
+                self._convert_btn.configure(state=tk.NORMAL)
+            else:
+                self._convert_btn.configure(state=tk.DISABLED)
+
     def _on_extract_click(self) -> None:
         """Save the inline/patch file from the wabba archive to disk."""
         d = self._selected_directive
@@ -489,3 +614,94 @@ class _FsTreePanel(ttk.Frame):
         if d.get("$type") == "PatchedFromArchive":
             default_name += ".octodelta"
         _do_extract_inline(self._wabba, source_id, default_name)
+
+    def _on_replace_click(self) -> None:
+        """Replace selected InlineFile payload in archive and modlist."""
+        d = self._selected_directive
+        if d is None or self._wabba is None or not self._allow_replace:
+            return
+        cache = self._wabba.cache
+        if cache is None:
+            return
+        _do_replace_inline(
+            self._wabba,
+            d,
+            cache.directives,
+            on_queue_upsert=self._on_queue_upsert,
+            on_apply_now=self._on_apply_now,
+            on_save_as_now=self._on_save_as_now,
+            on_busy_change=self._on_replace_busy,
+        )
+
+    def _on_delete_click(self) -> None:
+        """Queue delete of selected InlineFile directive and payload."""
+        d = self._selected_directive
+        if d is None or self._wabba is None or not self._allow_replace:
+            return
+        cache = self._wabba.cache
+        if cache is None:
+            return
+        _do_delete_inline(
+            d,
+            cache.directives,
+            on_queue_upsert=self._on_queue_upsert,
+            on_apply_now=self._on_apply_now,
+            on_save_as_now=self._on_save_as_now,
+            on_busy_change=self._on_replace_busy,
+        )
+
+    def _on_add_inline_click(self) -> None:
+        """Queue add InlineFile using selected folder context."""
+        if self._wabba is None or not self._allow_replace:
+            return
+
+        path = self._selected_path or ""
+        if self._selected_is_folder:
+            folder = path
+        else:
+            folder = "/".join(path.split("/")[:-1]) if path else ""
+
+        _do_add_inline_in_folder(
+            folder,
+            on_queue_upsert=self._on_queue_upsert,
+            on_apply_now=self._on_apply_now,
+            on_save_as_now=self._on_save_as_now,
+            on_busy_change=self._on_replace_busy,
+        )
+
+    def _on_add_inline_with_path_click(self) -> None:
+        """Queue add InlineFile with explicit destination path prompt."""
+        if self._wabba is None or not self._allow_replace:
+            return
+
+        path = self._selected_path or ""
+        if self._selected_is_folder:
+            folder = path
+        else:
+            folder = "/".join(path.split("/")[:-1]) if path else ""
+
+        _do_add_inline_with_path(
+            folder,
+            on_queue_upsert=self._on_queue_upsert,
+            on_apply_now=self._on_apply_now,
+            on_save_as_now=self._on_save_as_now,
+            on_busy_change=self._on_replace_busy,
+        )
+
+    def _on_convert_click(self) -> None:
+        """Queue conversion of selected FromArchive to new InlineFile."""
+        d = self._selected_directive
+        if d is None or self._wabba is None or not self._allow_replace:
+            return
+        _do_convert_fromarchive_to_inline(
+            d,
+            on_queue_upsert=self._on_queue_upsert,
+            on_apply_now=self._on_apply_now,
+            on_save_as_now=self._on_save_as_now,
+            on_busy_change=self._on_replace_busy,
+        )
+
+    def _on_replace_busy(self, busy: bool) -> None:
+        """Track active replace operation and refresh button state."""
+        self._replace_busy = bool(busy)
+        self._update_extract_btn()

@@ -15,6 +15,7 @@ from .gui_tab_modlist_json import _TabModlistJson
 from .gui_tab_archives import _TabArchives
 from .gui_tab_files import _TabFiles
 from .gui_tab_directives import _TabDirectives
+from .gui_tab_edit_changes import _TabEditChanges
 from .gui_tab_problems import _TabProblems
 from .gui_util import _archive_label
 
@@ -31,6 +32,7 @@ class WabbaExplorerApp(
     _TabArchives,
     _TabFiles,
     _TabDirectives,
+    _TabEditChanges,
     _TabProblems,
     tk.Tk,
 ):
@@ -83,6 +85,7 @@ class WabbaExplorerApp(
         self._content_text = None
 
         self._load_recent_files()
+        self._init_edit_queue_state()
         self._build_ui()
         self._build_menubar()
         self._redirect_output_streams()
@@ -219,6 +222,7 @@ class WabbaExplorerApp(
             self._build_tab_archives("Archives")
             self._build_tab_directives("Directives")
             self._build_tab_problems("Problems")
+            self._build_tab_edit_changes("Edit/Changes")
             return
 
         # ── Compare mode: interleaved A/B pairs ──────────────────────────

@@ -37,6 +37,9 @@ class _BackgroundLoaderMixin:
 
     def _load_file(self, path: str) -> None:
         """Open *path* in single-file mode, cancelling any previous load."""
+        if hasattr(self, "_clear_queued_changes"):
+            self._clear_queued_changes()
+
         # Cancel the previous wabba so its workers stop as soon as possible.
         if self._wabba is not None:
             if self._wabba.cache is not None:

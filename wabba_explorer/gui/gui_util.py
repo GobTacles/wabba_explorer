@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import json
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,9 @@ _PREVIEW_TAIL = 5   # last  N items shown in modlist-json tab
 
 _SEP = "\n\n" + "─" * 60 + "\n\n"
 _WABBA_FILE_KEY = "wabba file"
+
+# Compare old/new raw modlist bytes and print how localized JSON edits were.
+json_edit_byte_compare = True
 
 
 def _key_label(key: str, value) -> str:
@@ -211,3 +215,12 @@ def _do_extract_inline(wabba: "WabbaFile", source_id: str, default_filename: str
             fh.write(data)
     except Exception as exc:
         messagebox.showerror("Extract InlineFile", f"Failed to extract:\n{exc}")
+
+
+def _human_bytes(n: int) -> str:
+    """Format bytes using requested thresholds for console messages."""
+    if n < 5 * 1024:
+        return f"{n} bytes"
+    if n < int(0.6 * 1024 * 1024):
+        return f"{n / 1024:.1f} KiB"
+    return f"{n / (1024 * 1024):.1f} MiB"

@@ -7,6 +7,7 @@ from tkinter import ttk
 
 from .filtered_list_panel import _FilteredListPanel
 from .gui_util import _archive_label, _item_matches, _archive_item_matches
+from .gui_inline_edit import _do_remove_archive_and_directives
 
 
 class _TabArchives:
@@ -50,6 +51,9 @@ class _TabArchives:
         open_browser_btn_ref: list = [None]
         copy_url_btn_ref: list = [None]
         url_var_ref: list = [None]
+        remove_btn_ref: list = [None]
+        remove_busy_ref: list = [False]
+        allow_edit = wabba is None
 
         def _get_wabba():
             return wabba if wabba is not None else self._wabba
@@ -149,6 +153,16 @@ class _TabArchives:
             meta_btn.pack(side=tk.LEFT, padx=2, pady=2)
             meta_btn_ref[0] = meta_btn
 
+            if allow_edit:
+                remove_btn = ttk.Button(
+                    btn_row,
+                    text="remove archive and all directives using it",
+                    state=tk.DISABLED,
+                    command=_on_remove_archive_click,
+                )
+                remove_btn.pack(side=tk.LEFT, padx=2, pady=2)
+                remove_btn_ref[0] = remove_btn
+
             url_row = ttk.Frame(tools_frame)
             url_row.pack(fill=tk.X, pady=(2, 0))
 
@@ -206,6 +220,47 @@ class _TabArchives:
             for btn in (open_browser_btn_ref[0], copy_url_btn_ref[0]):
                 if btn is not None:
                     btn.configure(state=tk.NORMAL if url else tk.DISABLED)
+
+            remove_btn = remove_btn_ref[0]
+            if remove_btn is not None:
+                if allow_edit and not remove_busy_ref[0] and isinstance(item, dict):
+                    remove_btn.configure(state=tk.NORMAL)
+                else:
+                    remove_btn.configure(state=tk.DISABLED)
+
+        def _on_remove_busy_change(busy: bool) -> None:
+            remove_busy_ref[0] = bool(busy)
+            remove_btn = remove_btn_ref[0]
+            if remove_btn is None:
+                return
+            if busy:
+                remove_btn.configure(state=tk.DISABLED)
+                return
+            p = panel_ref[0]
+            item = p.get_selected_item() if p is not None else None
+            if allow_edit and isinstance(item, dict):
+                remove_btn.configure(state=tk.NORMAL)
+            else:
+                remove_btn.configure(state=tk.DISABLED)
+
+        def _on_remove_archive_click() -> None:
+            p = panel_ref[0]
+            if p is None:
+                return
+            item = p.get_selected_item()
+            if not isinstance(item, dict):
+                return
+            w = _get_wabba()
+            if w is None or w.cache is None:
+                return
+            _do_remove_archive_and_directives(
+                item,
+                w.cache.directives,
+                on_queue_upsert=self._queue_inline_change,
+                on_apply_now=self._apply_queued_changes_inplace,
+                on_save_as_now=self._apply_queued_changes_save_as,
+                on_busy_change=_on_remove_busy_change,
+            )
 
         def _on_meta_click() -> None:
             from tkinter import filedialog, messagebox

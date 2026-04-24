@@ -20,7 +20,14 @@ class _TabFiles:
         frame = ttk.Frame(self._main_nb)
         self._main_nb.add(frame, text=tab_label)
 
-        files_panel = _FsTreePanel(frame)
+        files_panel = _FsTreePanel(
+            frame,
+            allow_replace=(wabba is None),
+            on_replace_success=(lambda w: self._load_file(w.path)) if wabba is None else None,
+            on_queue_upsert=self._queue_inline_change if wabba is None else None,
+            on_apply_now=self._apply_queued_changes_inplace if wabba is None else None,
+            on_save_as_now=self._apply_queued_changes_save_as if wabba is None else None,
+        )
         files_panel.pack(fill=tk.BOTH, expand=True)
 
         if wabba is None:

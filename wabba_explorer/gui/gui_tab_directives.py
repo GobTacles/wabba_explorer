@@ -7,6 +7,11 @@ from tkinter import ttk
 
 from ..wabba.entry_info import get_directive_detail_text
 from .filtered_list_panel import _FilteredListPanel
+from .gui_inline_edit import (
+    _do_replace_inline,
+    _do_delete_inline,
+    _do_convert_fromarchive_to_inline,
+)
 from .gui_util import (
     _directive_label,
     _item_matches,
@@ -40,6 +45,11 @@ class _TabDirectives:
         # the _FilteredListPanel object exists.
         panel_ref: list = [None]
         extract_btn_ref: list = [None]
+        replace_btn_ref: list = [None]
+        delete_btn_ref: list = [None]
+        convert_btn_ref: list = [None]
+        replace_busy_ref: list = [False]
+        allow_replace = wabba is None
 
         def _get_wabba():
             return wabba if wabba is not None else self._wabba
@@ -115,6 +125,120 @@ class _TabDirectives:
             btn.pack(side=tk.LEFT, padx=2, pady=2)
             extract_btn_ref[0] = btn
 
+            if allow_replace:
+                def _on_replace_busy_change(busy: bool) -> None:
+                    replace_busy_ref[0] = bool(busy)
+                    rbtn = replace_btn_ref[0]
+                    dbtn = delete_btn_ref[0]
+                    cbtn = convert_btn_ref[0]
+                    if busy:
+                        if rbtn is not None:
+                            rbtn.configure(state=tk.DISABLED)
+                        if dbtn is not None:
+                            dbtn.configure(state=tk.DISABLED)
+                        if cbtn is not None:
+                            cbtn.configure(state=tk.DISABLED)
+                        return
+                    p = panel_ref[0]
+                    item = p.get_selected_item() if p is not None else None
+                    w = _get_wabba()
+                    if rbtn is not None:
+                        if item is not None and w is not None and item.get("$type") == "InlineFile":
+                            rbtn.configure(state=tk.NORMAL)
+                        else:
+                            rbtn.configure(state=tk.DISABLED)
+                    if dbtn is not None:
+                        if item is not None and w is not None and item.get("$type") == "InlineFile":
+                            dbtn.configure(state=tk.NORMAL)
+                        else:
+                            dbtn.configure(state=tk.DISABLED)
+                    if cbtn is not None:
+                        if item is not None and w is not None and item.get("$type") == "FromArchive":
+                            cbtn.configure(state=tk.NORMAL)
+                        else:
+                            cbtn.configure(state=tk.DISABLED)
+
+                def _do_replace() -> None:
+                    p = panel_ref[0]
+                    if p is None:
+                        return
+                    item = p.get_selected_item()
+                    if item is None:
+                        return
+                    w = _get_wabba()
+                    if w is None or w.cache is None:
+                        return
+                    _do_replace_inline(
+                        w,
+                        item,
+                        w.cache.directives,
+                        on_queue_upsert=self._queue_inline_change,
+                        on_apply_now=self._apply_queued_changes_inplace,
+                        on_save_as_now=self._apply_queued_changes_save_as,
+                        on_busy_change=_on_replace_busy_change,
+                    )
+
+                def _do_delete() -> None:
+                    p = panel_ref[0]
+                    if p is None:
+                        return
+                    item = p.get_selected_item()
+                    if item is None:
+                        return
+                    w = _get_wabba()
+                    if w is None or w.cache is None:
+                        return
+                    _do_delete_inline(
+                        item,
+                        w.cache.directives,
+                        on_queue_upsert=self._queue_inline_change,
+                        on_apply_now=self._apply_queued_changes_inplace,
+                        on_save_as_now=self._apply_queued_changes_save_as,
+                        on_busy_change=_on_replace_busy_change,
+                    )
+
+                def _do_convert() -> None:
+                    p = panel_ref[0]
+                    if p is None:
+                        return
+                    item = p.get_selected_item()
+                    if item is None:
+                        return
+                    _do_convert_fromarchive_to_inline(
+                        item,
+                        on_queue_upsert=self._queue_inline_change,
+                        on_apply_now=self._apply_queued_changes_inplace,
+                        on_save_as_now=self._apply_queued_changes_save_as,
+                        on_busy_change=_on_replace_busy_change,
+                    )
+
+                rbtn = ttk.Button(
+                    tools_frame,
+                    text="Replace InlineFile",
+                    state=tk.DISABLED,
+                    command=_do_replace,
+                )
+                rbtn.pack(side=tk.LEFT, padx=2, pady=2)
+                replace_btn_ref[0] = rbtn
+
+                dbtn = ttk.Button(
+                    tools_frame,
+                    text="Remove InlineFile + directive",
+                    state=tk.DISABLED,
+                    command=_do_delete,
+                )
+                dbtn.pack(side=tk.LEFT, padx=2, pady=2)
+                delete_btn_ref[0] = dbtn
+
+                cbtn = ttk.Button(
+                    tools_frame,
+                    text="replace by new InlineFile",
+                    state=tk.DISABLED,
+                    command=_do_convert,
+                )
+                cbtn.pack(side=tk.LEFT, padx=2, pady=2)
+                convert_btn_ref[0] = cbtn
+
         def _on_directive_item_changed(item) -> None:
             btn = extract_btn_ref[0]
             if btn is None:
@@ -124,6 +248,45 @@ class _TabDirectives:
                 btn.configure(state=tk.NORMAL)
             else:
                 btn.configure(state=tk.DISABLED)
+
+            rbtn = replace_btn_ref[0]
+            if rbtn is not None:
+                if (
+                    allow_replace
+                    and not replace_busy_ref[0]
+                    and item is not None
+                    and w is not None
+                    and item.get("$type") == "InlineFile"
+                ):
+                    rbtn.configure(state=tk.NORMAL)
+                else:
+                    rbtn.configure(state=tk.DISABLED)
+
+            dbtn = delete_btn_ref[0]
+            if dbtn is not None:
+                if (
+                    allow_replace
+                    and not replace_busy_ref[0]
+                    and item is not None
+                    and w is not None
+                    and item.get("$type") == "InlineFile"
+                ):
+                    dbtn.configure(state=tk.NORMAL)
+                else:
+                    dbtn.configure(state=tk.DISABLED)
+
+            cbtn = convert_btn_ref[0]
+            if cbtn is not None:
+                if (
+                    allow_replace
+                    and not replace_busy_ref[0]
+                    and item is not None
+                    and w is not None
+                    and item.get("$type") == "FromArchive"
+                ):
+                    cbtn.configure(state=tk.NORMAL)
+                else:
+                    cbtn.configure(state=tk.DISABLED)
 
         directives_panel = _FilteredListPanel(
             frame,
