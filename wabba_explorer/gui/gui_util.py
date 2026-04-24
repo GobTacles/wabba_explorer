@@ -48,6 +48,8 @@ def _build_name_pattern(text: str) -> re.Pattern | None:
     Rules:
     - ``^`` at the very start anchors the match to the beginning of the field.
     - ``*`` anywhere is a wildcard (matches any sequence of characters).
+        - Literal space and underscore in the filter both match either space or
+            underscore in the field value.
     - All other characters are treated as literals (re.escaped).
     - Match is case-insensitive.
     - Without ``^``, the pattern may match anywhere in the field value.
@@ -61,7 +63,18 @@ def _build_name_pattern(text: str) -> re.Pattern | None:
     anchored = text.startswith("^")
     raw = text[1:] if anchored else text
     pieces = raw.split("*")
-    pattern = ".*".join(re.escape(p) for p in pieces)
+
+    def _piece_to_regex(piece: str) -> str:
+        # Treat spaces and underscores as interchangeable separators.
+        out: list[str] = []
+        for ch in piece:
+            if ch in (" ", "_"):
+                out.append("[ _]")
+            else:
+                out.append(re.escape(ch))
+        return "".join(out)
+
+    pattern = ".*".join(_piece_to_regex(p) for p in pieces)
     if anchored:
         pattern = "^" + pattern
     try:

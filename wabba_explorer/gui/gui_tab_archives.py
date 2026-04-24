@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tkinter as tk
 from tkinter import ttk
 
@@ -132,11 +133,11 @@ class _TabArchives:
             return state.get("Url") or None
 
         def _build_tools(tools_frame: ttk.Frame) -> None:
-            btn_row = ttk.Frame(tools_frame)
-            btn_row.pack(fill=tk.X)
+            btn_row_1 = ttk.Frame(tools_frame)
+            btn_row_1.pack(fill=tk.X)
 
             meta_direct_btn = ttk.Button(
-                btn_row,
+                btn_row_1,
                 text="extract .meta for downloads folder",
                 state=tk.DISABLED,
                 command=_on_meta_direct_click,
@@ -145,7 +146,7 @@ class _TabArchives:
             meta_direct_btn_ref[0] = meta_direct_btn
 
             meta_btn = ttk.Button(
-                btn_row,
+                btn_row_1,
                 text="generate .meta for downloads folder (experimental)",
                 state=tk.DISABLED,
                 command=_on_meta_click,
@@ -153,9 +154,27 @@ class _TabArchives:
             meta_btn.pack(side=tk.LEFT, padx=2, pady=2)
             meta_btn_ref[0] = meta_btn
 
+            btn_row_2 = ttk.Frame(tools_frame)
+            btn_row_2.pack(fill=tk.X)
+
+            ttk.Button(
+                btn_row_2,
+                text="export all .meta for downloads",
+                command=_on_meta_direct_all_click,
+            ).pack(side=tk.LEFT, padx=2, pady=2)
+
+            ttk.Button(
+                btn_row_2,
+                text="generate all .meta for downloads",
+                command=_on_meta_all_click,
+            ).pack(side=tk.LEFT, padx=2, pady=2)
+
+            btn_row_3 = ttk.Frame(tools_frame)
+            btn_row_3.pack(fill=tk.X)
+
             if allow_edit:
                 remove_btn = ttk.Button(
-                    btn_row,
+                    btn_row_3,
                     text="remove archive and all directives using it",
                     state=tk.DISABLED,
                     command=_on_remove_archive_click,
@@ -287,6 +306,214 @@ class _TabArchives:
                     fh.write(content)
             except Exception as exc:
                 messagebox.showerror("generate .meta", f"Failed to save:\n{exc}")
+
+        def _is_game_archive(item: object) -> bool:
+            if not isinstance(item, dict):
+                return False
+            state_obj = item.get("State")
+            state_type = state_obj.get("$type", "") if isinstance(state_obj, dict) else ""
+            return "GameFileSourceDownloader" in state_type
+
+        def _archive_meta_filename(item: dict) -> str:
+            name = item.get("Name", "archive")
+            base = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            return base + ".meta"
+
+        def _pick_empty_output_folder(*, action_title: str) -> str | None:
+            from tkinter import filedialog, messagebox
+            folder = filedialog.askdirectory(title=action_title)
+            if not folder:
+                return None
+            try:
+                entries = os.listdir(folder)
+            except Exception as exc:
+                messagebox.showerror(action_title, f"Failed to read folder:\n{exc}")
+                return None
+            if entries:
+                messagebox.showerror(action_title, "Selected folder must be empty.")
+                return None
+            return folder
+
+        def _print_bulk_meta_summary(
+            *,
+            action_title: str,
+            folder: str,
+            total: int,
+            success: int,
+            skipped: int,
+            errors: list[str],
+        ) -> None:
+            print(
+                f"[archives:{action_title}] folder={folder} total={total} "
+                f"success={success} skipped={skipped} errors={len(errors)}"
+            )
+            for err in errors:
+                print(f"[archives:{action_title}:error] {err}")
+
+        def _show_bulk_meta_summary(
+            *,
+            action_title: str,
+            folder: str,
+            total: int,
+            success: int,
+            skipped: int,
+            errors: list[str],
+        ) -> None:
+            from tkinter import messagebox
+
+            summary_lines = [
+                f"Folder: {folder}",
+                f"Archives: {total}",
+                f"Written: {success}",
+                f"Skipped: {skipped}",
+                f"Errors: {len(errors)}",
+            ]
+            if errors:
+                summary_lines.append("")
+                summary_lines.append("Errors:")
+                preview = errors[:25]
+                summary_lines.extend(f"- {msg}" for msg in preview)
+                if len(errors) > len(preview):
+                    summary_lines.append(f"- ... and {len(errors) - len(preview)} more")
+                messagebox.showwarning(action_title, "\n".join(summary_lines))
+            else:
+                messagebox.showinfo(action_title, "\n".join(summary_lines))
+
+        def _on_meta_direct_all_click() -> None:
+            action_title = "export all .meta for downloads"
+            w = _get_wabba()
+            cache = w.cache if w is not None else None
+            archives = cache.archives if cache is not None else None
+            if not isinstance(archives, list):
+                from tkinter import messagebox
+                messagebox.showerror(action_title, "No Archives are loaded.")
+                return
+
+            folder = _pick_empty_output_folder(action_title=action_title)
+            if not folder:
+                return
+
+            errors: list[str] = []
+            success = 0
+            skipped = 0
+            total = len(archives)
+
+            for item in archives:
+                if not isinstance(item, dict):
+                    errors.append("invalid archive entry type")
+                    continue
+                name = str(item.get("Name", "archive"))
+                if _is_game_archive(item):
+                    skipped += 1
+                    continue
+
+                meta = item.get("Meta", "")
+                if not isinstance(meta, str) or not meta.strip():
+                    errors.append(f"{name}: missing direct Meta content")
+                    continue
+
+                target_path = os.path.join(folder, _archive_meta_filename(item))
+                if os.path.exists(target_path):
+                    errors.append(f"{name}: target already exists, not overwriting ({target_path})")
+                    continue
+
+                try:
+                    content = meta.replace("\\n", "\n")
+                    if not content.endswith("\n"):
+                        content += "\n"
+                    with open(target_path, "w", encoding="utf-8", newline="\n") as fh:
+                        fh.write(content)
+                    success += 1
+                except Exception as exc:
+                    errors.append(f"{name}: write failed ({exc})")
+
+            _print_bulk_meta_summary(
+                action_title=action_title,
+                folder=folder,
+                total=total,
+                success=success,
+                skipped=skipped,
+                errors=errors,
+            )
+            _show_bulk_meta_summary(
+                action_title=action_title,
+                folder=folder,
+                total=total,
+                success=success,
+                skipped=skipped,
+                errors=errors,
+            )
+
+        def _on_meta_all_click() -> None:
+            from ..wabba.generate_meta import generate_meta
+            from tkinter import messagebox
+
+            action_title = "generate all .meta for downloads"
+            w = _get_wabba()
+            cache = w.cache if w is not None else None
+            archives = cache.archives if cache is not None else None
+            if not isinstance(archives, list):
+                messagebox.showerror(action_title, "No Archives are loaded.")
+                return
+
+            add_installed = messagebox.askyesnocancel(
+                action_title,
+                "Add 'installed=true' line in .meta?",
+            )
+            if add_installed is None:
+                return
+
+            folder = _pick_empty_output_folder(action_title=action_title)
+            if not folder:
+                return
+
+            errors: list[str] = []
+            success = 0
+            skipped = 0
+            total = len(archives)
+
+            for item in archives:
+                if not isinstance(item, dict):
+                    errors.append("invalid archive entry type")
+                    continue
+                name = str(item.get("Name", "archive"))
+                if _is_game_archive(item):
+                    skipped += 1
+                    continue
+
+                content = generate_meta(item, include_installed=bool(add_installed))
+                if content is None:
+                    errors.append(f"{name}: no generated Meta content")
+                    continue
+
+                target_path = os.path.join(folder, _archive_meta_filename(item))
+                if os.path.exists(target_path):
+                    errors.append(f"{name}: target already exists, not overwriting ({target_path})")
+                    continue
+
+                try:
+                    with open(target_path, "w", encoding="utf-8", newline="\n") as fh:
+                        fh.write(content)
+                    success += 1
+                except Exception as exc:
+                    errors.append(f"{name}: write failed ({exc})")
+
+            _print_bulk_meta_summary(
+                action_title=action_title,
+                folder=folder,
+                total=total,
+                success=success,
+                skipped=skipped,
+                errors=errors,
+            )
+            _show_bulk_meta_summary(
+                action_title=action_title,
+                folder=folder,
+                total=total,
+                success=success,
+                skipped=skipped,
+                errors=errors,
+            )
 
         def _on_meta_direct_click() -> None:
             from tkinter import filedialog, messagebox

@@ -200,18 +200,22 @@ def diff_archives(
     * **added**   – present in B, absent in A.
     * **updated** – A-only and B-only archives that share the same mod
       identity key (e.g. same Nexus ModID).  Only 1-to-1 pairings are
-      merged; if a key appears more than once on either side all its
-      entries stay as individual ``removed``/``added`` items.
+      merged.
+    * **removed-multipart** / **added-multipart** – A-only or B-only
+      archives whose mod-key appears on *both* sides but with more than
+      one archive on at least one side (multi-file mod, cannot be
+      auto-paired).
 
     Each returned dict is a copy of the original archive dict augmented
     with extra keys:
 
-    * ``_diff_side`` – ``"removed"``, ``"added"``, or ``"updated"``
+    * ``_diff_side`` – ``"removed"``, ``"added"``, ``"updated"``,
+      ``"removed-multipart"``, or ``"added-multipart"``
     * For ``"updated"`` items additionally: ``_diff_wabba="A"``,
       ``_ver_a``, ``_ver_b``, ``_b_archive``.
 
     Items are ordered: updated pairs first (sorted by mod name), then
-    remaining A-only (removed), then remaining B-only (added).
+    multipart items, then remaining A-only (removed), then B-only (added).
     """
     hashes_a = set(cache_a.archives_by_hash.keys())
     hashes_b = set(cache_b.archives_by_hash.keys())
@@ -241,9 +245,17 @@ def diff_archives(
         if len(mods_a[key]) == 1 and len(mods_b[key]) == 1
     }
 
+    # Keys present on both sides but with >1 archive on at least one side
+    # (multi-file / multi-part mods that cannot be auto-paired).
+    multipart_keys = (set(mods_a) & set(mods_b)) - shared_mod_ids
+
     # Hashes absorbed into "updated" pairs (excluded from removed/added).
     updated_hashes_a = {mods_a[key][0]["Hash"] for key in shared_mod_ids}
     updated_hashes_b = {mods_b[key][0]["Hash"] for key in shared_mod_ids}
+
+    # Hashes absorbed into multipart groups.
+    multipart_hashes_a = {arch["Hash"] for key in multipart_keys for arch in mods_a[key]}
+    multipart_hashes_b = {arch["Hash"] for key in multipart_keys for arch in mods_b[key]}
 
     diff_items: list[dict] = []
 
@@ -266,14 +278,26 @@ def diff_archives(
         item["_b_archive"] = dict(arch_b)
         diff_items.append(item)
 
-    # Add remaining A-only items (not part of an update pair).
-    for h in sorted(only_in_a - updated_hashes_a):
+    # Add multipart A-only items.
+    for h in sorted(multipart_hashes_a):
+        item = dict(cache_a.archives_by_hash[h])
+        item["_diff_side"] = "removed-multipart"
+        diff_items.append(item)
+
+    # Add multipart B-only items.
+    for h in sorted(multipart_hashes_b):
+        item = dict(cache_b.archives_by_hash[h])
+        item["_diff_side"] = "added-multipart"
+        diff_items.append(item)
+
+    # Add remaining A-only items (not part of an update or multipart group).
+    for h in sorted(only_in_a - updated_hashes_a - multipart_hashes_a):
         item = dict(cache_a.archives_by_hash[h])
         item["_diff_side"] = "removed"
         diff_items.append(item)
 
-    # Add remaining B-only items (not part of an update pair).
-    for h in sorted(only_in_b - updated_hashes_b):
+    # Add remaining B-only items (not part of an update or multipart group).
+    for h in sorted(only_in_b - updated_hashes_b - multipart_hashes_b):
         item = dict(cache_b.archives_by_hash[h])
         item["_diff_side"] = "added"
         diff_items.append(item)

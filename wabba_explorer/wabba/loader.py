@@ -401,10 +401,12 @@ def run_diff_archives_prep(
     updated = sum(1 for i in items if i.get("_diff_side") == "updated")
     removed = sum(1 for i in items if i.get("_diff_side") == "removed")
     added = sum(1 for i in items if i.get("_diff_side") == "added")
+    multipart = sum(1 for i in items if i.get("_diff_side") in ("removed-multipart", "added-multipart"))
     _label = f"[{label}] " if label else ""
+    multipart_str = f", {multipart} multipart" if multipart else ""
     print(
         f"[bg] {_label}diff archives prep done  "
-        f"({updated} updated, {removed} removed, {added} added, {elapsed_ms} ms)"
+        f"({updated} updated, {removed} removed, {added} added{multipart_str}, {elapsed_ms} ms)"
     )
 
 

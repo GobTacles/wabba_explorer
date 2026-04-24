@@ -181,9 +181,11 @@ class _BackgroundDiffMixin:
             updated = sum(1 for i in items if i.get("_diff_side") == "updated")
             removed = sum(1 for i in items if i.get("_diff_side") == "removed")
             added = sum(1 for i in items if i.get("_diff_side") == "added")
+            multipart = sum(1 for i in items if i.get("_diff_side") in ("removed-multipart", "added-multipart"))
+            multipart_str = f", {multipart} multipart" if multipart else ""
             print(
                 f"[tab] loaded: D:Archives  "
-                f"({updated} updated, {removed} removed, {added} added)"
+                f"({updated} updated, {removed} removed, {added} added{multipart_str})"
             )
         else:
             def _retry() -> None:
