@@ -96,15 +96,21 @@ def run_phase_b(
         archive = mr.archive
         expected_hash = archive.get("Hash", "")
         name = archive.get("Name", "(no name)")
-        logger.log(f"[B] {i + 1}/{total} {name}")
+        expected_name = str(name).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        b_line = f"[B] {i + 1}/{total} {name}"
 
         hr = ArchiveHashResult(archive=archive)
         hash_mismatches: list[str] = []
+        deferred_lines: list[str] = []
+        accepted_inline_hash = ""
 
         if not mr.candidates:
-            logger.log("  no candidates, skip")
+            deferred_lines.append("  no candidates, skip")
             hash_results.append(hr)
             total_failed += 1
+            logger.log(b_line)
+            for line in deferred_lines:
+                logger.log(line)
             if progress_cb:
                 progress_cb(DownloadsProgressEvent(
                     phase="Phase B: hashing",
@@ -122,20 +128,25 @@ def run_phase_b(
             ck = _cache_key(cand.path)
             if ck is not None and ck in hash_cache:
                 actual_hash = hash_cache[ck]
-                logger.log(f"  [cached] {cand.filename}")
+                deferred_lines.append(f"  [cached] {cand.filename}")
             else:
                 try:
                     actual_hash = _hash_file(cand.path)
                 except Exception as exc:
                     hr.error = f"hash error for {cand.path}: {exc}"
-                    logger.log(f"  ERROR hashing {cand.path}: {exc}")
+                    deferred_lines.append(f"  ERROR hashing {cand.path}: {exc}")
                     continue
                 if ck is not None:
                     hash_cache[ck] = actual_hash
 
             if actual_hash == expected_hash:
                 hr.accepted_candidate = cand
-                logger.log(f"  [ACCEPTED] {cand.filename}  hash={actual_hash}")
+                if cand.filename == expected_name:
+                    accepted_inline_hash = actual_hash
+                else:
+                    deferred_lines.append(
+                        f"  [ACCEPTED] {cand.filename}  hash={actual_hash}"
+                    )
                 break
             else:
                 if len(hash_mismatches) < _MAX_HASH_MISMATCHES:
@@ -143,14 +154,21 @@ def run_phase_b(
                         f"    hash-mismatch: {cand.filename}  "
                         f"expected={expected_hash}  actual={actual_hash}"
                     )
-                    logger.log(hash_mismatches[-1])
+                    deferred_lines.append(hash_mismatches[-1])
 
         hr.hash_mismatches = hash_mismatches
         if hr.accepted_candidate is None and not hr.error:
             total_failed += 1
-            logger.log(f"  [no hash match] {name}")
+            deferred_lines.append(f"  [no hash match] {name}")
         elif hr.accepted_candidate is not None:
             total_accepted += 1
+
+        if accepted_inline_hash:
+            logger.log(f"{b_line} [ACCEPTED] hash={accepted_inline_hash}")
+        else:
+            logger.log(b_line)
+        for line in deferred_lines:
+            logger.log(line)
 
         hash_results.append(hr)
 

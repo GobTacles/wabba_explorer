@@ -98,8 +98,6 @@ def find_candidates(
                 result.candidates.append(
                     ArchiveCandidate(path=fpath, filename=filename, file_size=fsize)
                 )
-                if logger:
-                    logger.log(f"  [size-match] {fpath}")
                 if len(result.candidates) >= _MAX_CANDIDATES:
                     return True
             else:
@@ -221,11 +219,20 @@ def run_phase_a(
             continue
 
         name = archive.get("Name", "(no name)")
-        logger.log(f"[A] {i + 1}/{total} {name}")
+        archive_name = str(name).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
 
         mr = find_candidates(archive, folder_index, logger=logger)
 
-        if mr.size_mismatches:
+        line_suffix = ""
+        if mr.candidates:
+            if any(c.filename == archive_name for c in mr.candidates):
+                line_suffix = " [name-exact,size-match]"
+            else:
+                line_suffix = " [size-match]"
+        logger.log(f"[A] {i + 1}/{total} {name}{line_suffix}")
+
+        # Only report size mismatches if no size-match candidate was found.
+        if mr.size_mismatches and not mr.candidates:
             for line in mr.size_mismatches:
                 logger.log(line)
 

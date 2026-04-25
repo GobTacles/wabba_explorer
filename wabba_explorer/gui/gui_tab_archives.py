@@ -283,27 +283,12 @@ class _TabArchives:
 
             meta_btn = ttk.Button(
                 btn_row_1,
-                text="generate .meta for downloads folder (experimental)",
+                text="generate .meta for downloads folder",
                 state=tk.DISABLED,
                 command=_on_meta_click,
             )
             meta_btn.pack(side=tk.LEFT, padx=2, pady=2)
             meta_btn_ref[0] = meta_btn
-
-            ttk.Button(
-                btn_row_1,
-                text="move/copy from a shared downloads folder",
-                command=_on_downloads_move_copy_click,
-            ).pack(side=tk.LEFT, padx=2, pady=2)
-
-            find_btn = ttk.Button(
-                btn_row_1,
-                text="find in downloads folder",
-                state=tk.DISABLED,
-                command=_on_find_in_downloads_click,
-            )
-            find_btn.pack(side=tk.LEFT, padx=2, pady=2)
-            find_in_downloads_btn_ref[0] = find_btn
 
             btn_row_2 = ttk.Frame(tools_frame)
             btn_row_2.pack(fill=tk.X)
@@ -320,18 +305,33 @@ class _TabArchives:
                 command=_on_meta_all_click,
             ).pack(side=tk.LEFT, padx=2, pady=2)
 
-            btn_row_3 = ttk.Frame(tools_frame)
-            btn_row_3.pack(fill=tk.X)
-
             if allow_edit:
                 remove_btn = ttk.Button(
-                    btn_row_3,
+                    btn_row_2,
                     text="remove archive and all directives using it",
                     state=tk.DISABLED,
                     command=_on_remove_archive_click,
                 )
                 remove_btn.pack(side=tk.LEFT, padx=2, pady=2)
                 remove_btn_ref[0] = remove_btn
+
+            btn_row_3 = ttk.Frame(tools_frame)
+            btn_row_3.pack(fill=tk.X)
+
+            ttk.Button(
+                btn_row_3,
+                text="move/copy from a shared downloads folder",
+                command=_on_downloads_move_copy_click,
+            ).pack(side=tk.LEFT, padx=2, pady=2)
+
+            find_btn = ttk.Button(
+                btn_row_3,
+                text="find in downloads folder",
+                state=tk.DISABLED,
+                command=_on_find_in_downloads_click,
+            )
+            find_btn.pack(side=tk.LEFT, padx=2, pady=2)
+            find_in_downloads_btn_ref[0] = find_btn
 
             ttk.Button(
                 btn_row_3,
@@ -406,7 +406,12 @@ class _TabArchives:
 
             find_btn = find_in_downloads_btn_ref[0]
             if find_btn is not None:
-                find_btn.configure(state=tk.NORMAL if isinstance(item, dict) else tk.DISABLED)
+                state_obj = item.get("State") if isinstance(item, dict) else None
+                state_type = state_obj.get("$type", "") if isinstance(state_obj, dict) else ""
+                is_game_file = "GameFileSourceDownloader" in state_type
+                find_btn.configure(
+                    state=tk.NORMAL if isinstance(item, dict) and not is_game_file else tk.DISABLED
+                )
 
         def _on_remove_busy_change(busy: bool) -> None:
             remove_busy_ref[0] = bool(busy)

@@ -31,6 +31,17 @@ from .downloads_analysis_phase_b import run_phase_b
 from .downloads_analysis_phase_c import run_phase_c
 
 
+def _is_game_file_source_archive(archive: object) -> bool:
+    """Return True when *archive* is a GameFileSourceDownloader entry."""
+    if not isinstance(archive, dict):
+        return False
+    state = archive.get("State")
+    if not isinstance(state, dict):
+        return False
+    state_type = str(state.get("$type", "") or "")
+    return "GameFileSourceDownloader" in state_type
+
+
 def _build_pre_hash_details(report: DownloadsOperationReport) -> str:
     """Build a human-readable pre-hash summary string for the confirm dialog."""
     lines = [
@@ -124,6 +135,17 @@ def run_downloads_operation(
             archives = [request.target_archive]
         else:
             archives = [a for a in archives if a is request.target_archive]
+
+    # Ignore game-file-source downloader entries for all shared-download tools.
+    total_input_archives = len(archives)
+    archives = [a for a in archives if not _is_game_file_source_archive(a)]
+    ignored_count = total_input_archives - len(archives)
+    if ignored_count:
+        logger.log(
+            "Ignoring "
+            f"{ignored_count} archive(s) with State.$type containing "
+            "GameFileSourceDownloader."
+        )
 
     # ── Phase A ─────────────────────────────────────────────────────────
     t_a = time.monotonic()
