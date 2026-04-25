@@ -54,6 +54,7 @@ class _TabArchives:
         url_var_ref: list = [None]
         remove_btn_ref: list = [None]
         remove_busy_ref: list = [False]
+        find_in_downloads_btn_ref: list = [None]
         allow_edit = wabba is None
 
         def _get_wabba():
@@ -132,6 +133,141 @@ class _TabArchives:
                         return line[len("directURL="):]
             return state.get("Url") or None
 
+        # ── Downloads-analysis action helpers ─────────────────────────────
+
+        def _run_downloads_operation_gui(mode: str, target_archive=None) -> None:
+            """Common entry point for all three downloads operations."""
+            from ..wabba.downloads_analysis import run_downloads_operation, save_report
+            from ..wabba.downloads_analysis_fileops import make_log_filename
+            from ..wabba.downloads_analysis_types import (
+                DownloadsOperationRequest, MODE_FIND_ONE, MODE_MOVE_COPY, MODE_VERIFY,
+            )
+            from .gui_downloads_analysis_dialogs import (
+                _DownloadsOptionsDialog, show_confirm_dialog, show_report_dialog, reveal_in_explorer,
+            )
+            from .gui_downloads_analysis_progress import DownloadsProgressDialog
+            import os as _os
+
+            w = _get_wabba()
+            cache = w.cache if w is not None else None
+            archives = cache.archives if cache is not None else None
+            if not isinstance(archives, list):
+                from tkinter import messagebox
+                messagebox.showerror("Downloads", "No Archives are loaded.")
+                return
+
+            # Collect options via dialog
+            dlg = _DownloadsOptionsDialog(self, mode)
+            request = dlg.show()
+            if request is None:
+                return
+            if target_archive is not None:
+                request.target_archive = target_archive
+
+            # Confirm callbacks that run on the GUI thread via threading.Event
+            import threading as _threading
+
+            def _make_confirm_cb(label: str):
+                """Return a confirm callback safe to call from the worker thread."""
+                def _cb(title: str, summary: str, details: str) -> bool:
+                    event = _threading.Event()
+                    result_holder = [False]
+
+                    def _show() -> None:
+                        result_holder[0] = show_confirm_dialog(self, title, summary, details)
+                        event.set()
+
+                    self.after(0, _show)
+                    event.wait()
+                    return result_holder[0]
+                return _cb
+
+            def _log_cb(line: str) -> None:
+                print(f"[downloads] {line}")
+
+            # Run in progress dialog
+            progress_dlg = DownloadsProgressDialog(self)
+            report = progress_dlg.run(
+                request,
+                archives,
+                op_fn=run_downloads_operation,
+                pre_hash_confirm_cb=_make_confirm_cb("pre-hash"),
+                post_hash_confirm_cb=_make_confirm_cb("post-hash"),
+                log_cb=_log_cb,
+            )
+            if report is None:
+                return
+
+            # Save report per mode
+            save_path = ""
+            if mode == MODE_MOVE_COPY and request.dest_folder:
+                fname = make_log_filename("wabbaexplorer-move")
+                save_path = _os.path.join(request.dest_folder, fname)
+                try:
+                    save_report(report, save_path)
+                except Exception as exc:
+                    print(f"[downloads] failed to save report: {exc}")
+                    save_path = ""
+            elif mode == MODE_VERIFY:
+                from tkinter import filedialog
+                save_path = filedialog.asksaveasfilename(
+                    title="Save verify report",
+                    defaultextension=".log",
+                    filetypes=[("Log files", "*.log"), ("All files", "*.*")],
+                    initialfile=make_log_filename("wabbaexplorer-verify"),
+                )
+                if save_path:
+                    try:
+                        save_report(report, save_path)
+                    except Exception as exc:
+                        print(f"[downloads] failed to save report: {exc}")
+                        save_path = ""
+
+            # Determine reveal path
+            reveal_path = ""
+            if mode == MODE_FIND_ONE:
+                # Reveal the accepted candidate (or first any-candidate file)
+                for hr in report.hash_results:
+                    if hr.accepted_candidate:
+                        reveal_path = hr.accepted_candidate.path
+                        break
+                if not reveal_path:
+                    for mr in report.match_results:
+                        if mr.candidates:
+                            reveal_path = mr.candidates[0].path
+                            break
+            elif mode == MODE_MOVE_COPY:
+                reveal_path = save_path  # reveal the saved log in dest folder
+            elif mode == MODE_VERIFY and save_path:
+                reveal_path = save_path
+
+            report_text = "\n".join(report.log_lines)
+            show_report_dialog(
+                self,
+                "Downloads operation report",
+                report_text,
+                reveal_path=reveal_path,
+                save_path=save_path,
+            )
+
+        def _on_downloads_move_copy_click() -> None:
+            from ..wabba.downloads_analysis_types import MODE_MOVE_COPY
+            _run_downloads_operation_gui(MODE_MOVE_COPY)
+
+        def _on_downloads_verify_click() -> None:
+            from ..wabba.downloads_analysis_types import MODE_VERIFY
+            _run_downloads_operation_gui(MODE_VERIFY)
+
+        def _on_find_in_downloads_click() -> None:
+            from ..wabba.downloads_analysis_types import MODE_FIND_ONE
+            p = panel_ref[0]
+            if p is None:
+                return
+            item = p.get_selected_item()
+            if not isinstance(item, dict):
+                return
+            _run_downloads_operation_gui(MODE_FIND_ONE, target_archive=item)
+
         def _build_tools(tools_frame: ttk.Frame) -> None:
             btn_row_1 = ttk.Frame(tools_frame)
             btn_row_1.pack(fill=tk.X)
@@ -153,6 +289,21 @@ class _TabArchives:
             )
             meta_btn.pack(side=tk.LEFT, padx=2, pady=2)
             meta_btn_ref[0] = meta_btn
+
+            ttk.Button(
+                btn_row_1,
+                text="move/copy from a shared downloads folder",
+                command=_on_downloads_move_copy_click,
+            ).pack(side=tk.LEFT, padx=2, pady=2)
+
+            find_btn = ttk.Button(
+                btn_row_1,
+                text="find in downloads folder",
+                state=tk.DISABLED,
+                command=_on_find_in_downloads_click,
+            )
+            find_btn.pack(side=tk.LEFT, padx=2, pady=2)
+            find_in_downloads_btn_ref[0] = find_btn
 
             btn_row_2 = ttk.Frame(tools_frame)
             btn_row_2.pack(fill=tk.X)
@@ -181,6 +332,12 @@ class _TabArchives:
                 )
                 remove_btn.pack(side=tk.LEFT, padx=2, pady=2)
                 remove_btn_ref[0] = remove_btn
+
+            ttk.Button(
+                btn_row_3,
+                text="verify (shared) downloads folder",
+                command=_on_downloads_verify_click,
+            ).pack(side=tk.LEFT, padx=2, pady=2)
 
             url_row = ttk.Frame(tools_frame)
             url_row.pack(fill=tk.X, pady=(2, 0))
@@ -246,6 +403,10 @@ class _TabArchives:
                     remove_btn.configure(state=tk.NORMAL)
                 else:
                     remove_btn.configure(state=tk.DISABLED)
+
+            find_btn = find_in_downloads_btn_ref[0]
+            if find_btn is not None:
+                find_btn.configure(state=tk.NORMAL if isinstance(item, dict) else tk.DISABLED)
 
         def _on_remove_busy_change(busy: bool) -> None:
             remove_busy_ref[0] = bool(busy)
